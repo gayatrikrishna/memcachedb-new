@@ -1,3 +1,11 @@
+2008-09-01 Steve Chu <stvchu@gmail.com>
+   * Now 'append' and 'prepend' commands are supported.
+   * Merge bugfix code from Memecached community.
+	 * lots of refactors for better implementation and a bit code tuning.
+
+2008-08-28 Version 1.1.0 released
+2008-08-28 Version 1.0.4 released(maitaining release)
+
 2008-07-25 Steve Chu <stvchu@gmail.com>
    * Warning: 'pkget' and 'pvget' private command now has been discarded. 
    Memcachedb will be a more memcache protocol compatible daemon(append and

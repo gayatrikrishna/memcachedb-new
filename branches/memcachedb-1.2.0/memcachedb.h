@@ -1,4 +1,5 @@
 /* -*- Mode: C; tab-width: 4; c-basic-offset: 4; indent-tabs-mode: nil -*- */
+/* $Id$ */
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -9,6 +10,7 @@
 #include <sys/time.h>
 #include <netinet/in.h>
 #include <event.h>
+#include <netdb.h>
 #include <db.h>
 
 #define DATA_BUFFER_SIZE 2048
@@ -16,7 +18,6 @@
 #define UDP_MAX_PAYLOAD_SIZE 1400
 #define UDP_HEADER_SIZE 8
 #define MAX_SENDBUF_SIZE (256 * 1024 * 1024)
-
 /* I'm told the max legnth of a 64-bit num converted to string is 20 bytes.
  * Plus a few for spaces, \r\n, \0 */
 #define SUFFIX_SIZE 24
@@ -36,7 +37,6 @@
 #define IOV_LIST_HIGHWAT 600
 #define MSG_LIST_HIGHWAT 100
 
-#define MAX_VERBOSITY_LEVEL 2
 #define MAX_REP_PRIORITY 1000000
 #define MAX_REP_ACK_POLICY 6
 #define MAX_REP_ACK_TIMEOUT 3600000000ul
@@ -49,7 +49,6 @@
 #define DBHOME "/data1/memcachedb"
 
 #define BDB_EID_SELF -3
-
 
 /* Get a consistent bool type */
 #if HAVE_STDBOOL_H
@@ -82,17 +81,22 @@ struct stats {
     uint64_t      bytes_written;
 };
 
+#define MAX_VERBOSITY_LEVEL 2
+
 struct settings {
     size_t item_buf_size;
     int maxconns;
     int port;
     int udpport;
-    struct in_addr interf;
+    char *inter;
     int verbose;
     char *socketpath;   /* path to unix socket if using local socket */
     int access;  /* access mask (a la chmod) for unix domain socket */
     int num_threads;        /* number of libevent threads to run */
 };
+
+extern struct stats stats;
+extern struct settings settings;
 
 struct bdb_version {
     int majver;
@@ -138,7 +142,7 @@ struct bdb_settings {
     u_int32_t rep_lease_timeout;
 
     int rep_bulk;
-	int rep_lease;  /* if master lease is enabled? */
+	  int rep_lease;  /* if master lease is enabled? */
 
     u_int32_t rep_priority;
 
@@ -151,6 +155,9 @@ struct bdb_settings {
     u_int32_t rep_limit_gbytes; 
     u_int32_t rep_limit_bytes; 
 };
+
+extern struct bdb_settings bdb_settings;
+extern struct bdb_version bdb_version;
 
 typedef struct _stritem {
     int             nbytes;     /* size of data */
@@ -182,8 +189,11 @@ enum conn_states {
 #define NREAD_ADD 1
 #define NREAD_SET 2
 #define NREAD_REPLACE 3
+#define NREAD_APPEND 4
+#define NREAD_PREPEND 5
 
-typedef struct {
+typedef struct conn conn;
+struct conn {
     int    sfd;
     int    state;
     struct event event;
@@ -242,11 +252,11 @@ typedef struct {
     socklen_t request_addr_size;
     unsigned char *hdrbuf; /* udp packet headers */
     int    hdrsize;   /* number of headers' worth of space is allocated */
-
-} conn;
+    conn   *next;     /* Used for generating a list of conn structures */
+};
 
 /*
- * Functions protype
+ * Functions
  */
 
 /* bdb management */
@@ -269,16 +279,18 @@ int do_item_add_to_freelist(item *it);
 item *item_alloc1(char *key, const size_t nkey, const int flags, const int nbytes);
 item *item_alloc2(size_t ntotal);
 int item_free(item *it);
-
+item *item_get(char *key, size_t nkey);
+int item_put(char *key, size_t nkey, item *it);
+int item_delete(char *key, size_t nkey);
+int item_exists(char *key, size_t nkey);
 
 /* conn management */
 conn *do_conn_from_freelist();
 bool do_conn_add_to_freelist(conn *c);
+conn *conn_new(const int sfd, const int init_state, const int event_flags, const int read_buffer_size, const bool is_udp, struct event_base *base);
 
 char *do_add_delta(const bool incr, const int64_t delta, char *buf, char *key, size_t nkey);
 int do_store_item(item *item, int comm);
-
-conn *conn_new(const int sfd, const int init_state, const int event_flags, const int read_buffer_size, const bool is_udp, struct event_base *base);
 
 /*
  * In multithreaded mode, we wrap certain functions with lock management and
@@ -344,10 +356,6 @@ int   mt_store_item(item *item, int comm);
     memset(&dbkey, 0, sizeof(dbkey)); \
     memset(&dbdata, 0, sizeof(dbdata))
 
-extern struct stats stats;
-extern struct settings settings;
-extern struct bdb_settings bdb_settings;
-extern struct bdb_version bdb_version;
 extern DB_ENV *env;
 extern DB *dbp;
 extern int daemon_quit;

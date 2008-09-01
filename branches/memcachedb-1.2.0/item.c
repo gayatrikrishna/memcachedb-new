@@ -206,3 +206,126 @@ int item_free(item *it) {
     }
     return 0;
 }
+
+/* if return item is not NULL, free by caller */
+item *item_get(char *key, size_t nkey){
+    item *it = NULL;
+    DBT dbkey, dbdata;
+    bool stop;
+    int ret;
+    
+    /* first, alloc a fixed size */
+    it = item_alloc2(settings.item_buf_size);
+    if (it == 0) {
+        return NULL;
+    }
+
+    BDB_CLEANUP_DBT();
+    dbkey.data = key;
+    dbkey.size = nkey;
+    dbdata.ulen = settings.item_buf_size;
+    dbdata.data = it;
+    dbdata.flags = DB_DBT_USERMEM;
+
+    stop = false;
+    /* try to get a item from bdb */
+    while (!stop) {
+        switch (ret = dbp->get(dbp, NULL, &dbkey, &dbdata, 0)) {
+        case DB_BUFFER_SMALL:    /* user mem small */
+            /* free the original smaller buffer */
+            item_free(it);
+            /* alloc the correct size */
+            it = item_alloc2(dbdata.size);
+            if (it == NULL) {
+                /* no memory */
+                return NULL;
+            }
+            dbdata.ulen = dbdata.size;
+            dbdata.data = it;
+            break;
+        case 0:                  /* Success. */
+            stop = true;
+            break;
+        case DB_NOTFOUND:
+            stop = true;
+            item_free(it);
+            it = NULL;
+            break;
+        default:
+            /* TODO: may cause bug here, if return DB_BUFFER_SMALL then retun non-zero again
+             * here 'it' may not a full one. a item buffer larger than item_buf_size may be added to freelist */
+            stop = true;
+            item_free(it);
+            it = NULL;
+            if (settings.verbose > 1) {
+                fprintf(stderr, "dbp->get: %s\n", db_strerror(ret));
+            }
+        }
+    }
+    return it;
+}
+
+/* 0 for Success
+   -1 for SERVER_ERROR
+*/
+int item_put(char *key, size_t nkey, item *it){
+    int ret;
+    DBT dbkey, dbdata;
+
+    BDB_CLEANUP_DBT();
+    dbkey.data = key;
+    dbkey.size = nkey;
+    dbdata.data = it;
+    dbdata.size = ITEM_ntotal(it);
+    ret = dbp->put(dbp, NULL, &dbkey, &dbdata, 0);
+    if (ret == 0) {
+        return 0;
+    } else {
+        if (settings.verbose > 1) {
+            fprintf(stderr, "dbp->put: %s\n", db_strerror(ret));
+        }
+        return -1;
+    }
+}
+
+/* 0 for Success
+   1 for NOT_FOUND
+   -1 for SERVER_ERROR
+*/
+int item_delete(char *key, size_t nkey){
+    int ret;
+    DBT dbkey;
+    
+    memset(&dbkey, 0, sizeof(dbkey));
+    dbkey.data = key;
+    dbkey.size = nkey;
+    ret = dbp->del(dbp, NULL, &dbkey, 0);
+    if (ret == 0){
+        return 0;
+    }else if(ret == DB_NOTFOUND){
+        return 1;
+    }else{
+        if (settings.verbose > 1) {
+            fprintf(stderr, "dbp->del: %s\n", db_strerror(ret));
+        }
+        return -1;
+    }
+}
+
+/*
+1 for exists
+0 for non-exist
+*/
+int item_exists(char *key, size_t nkey){
+    int ret;
+    DBT dbkey;
+    
+    memset(&dbkey, 0, sizeof(dbkey));
+    dbkey.data = key;
+    dbkey.size = nkey;
+    ret = dbp->exists(dbp, NULL, &dbkey, 0);
+    if (ret == 0){
+        return 1;
+    }
+    return 0;
+}

@@ -1,6 +1,6 @@
 /* -*- Mode: C; tab-width: 4; c-basic-offset: 4; indent-tabs-mode: nil -*- */
 /*
- *  Memcachedb - A distributed key-value storage system designed for persistent:
+ *  MemcacheDB - A distributed key-value storage system designed for persistent:
  *
  *      http://memcachedb.googlecode.com
  *
@@ -23,7 +23,7 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <sys/signal.h>
+#include <signal.h>
 #include <sys/resource.h>
 #include <sys/uio.h>
 
@@ -63,15 +63,11 @@
 #endif
 #endif
 
-#ifndef IOV_MAX
-# define IOV_MAX 1024
-#endif
-
 /*
  * forward declarations
  */
 static void drive_machine(conn *c);
-static int new_socket(const bool is_udp);
+static int new_socket(struct addrinfo *ai);
 static int server_socket(const int port, const bool is_udp);
 static int try_read_command(conn *c);
 static int try_read_network(conn *c);
@@ -97,7 +93,6 @@ static int ensure_iov_space(conn *c);
 static int add_iov(conn *c, const void *buf, int len);
 static int add_msghdr(conn *c);
 
-void pre_gdb(void);
 static void conn_free(conn *c);
 
 /** exported globals **/
@@ -112,7 +107,7 @@ DB *dbp;
 int daemon_quit = 0;
 
 /** file scope variables **/
-static conn *listen_conn;
+static conn *listen_conn = NULL;
 static struct event_base *main_base;
 
 #define TRANSMIT_COMPLETE   0
@@ -144,7 +139,8 @@ static void settings_init(void) {
     settings.access=0700;
     settings.port = 21201;
     settings.udpport = 0;
-    settings.interf.s_addr = htonl(INADDR_ANY);
+    /* By default this string should be NULL for getaddrinfo() */
+    settings.inter = NULL;
     settings.item_buf_size = 512;     /* default is 512B */
     settings.maxconns = 1024;         /* to limit connections-related memory to about 5MB */
     settings.verbose = 0;
@@ -208,11 +204,12 @@ static conn **freeconns;
 static int freetotal;
 static int freecurr;
 
+
 static void conn_init(void) {
     freetotal = 200;
     freecurr = 0;
     if ((freeconns = (conn **)malloc(sizeof(conn *) * freetotal)) == NULL) {
-        perror("malloc()");
+        fprintf(stderr, "malloc()\n");
     }
     return;
 }
@@ -259,8 +256,8 @@ conn *conn_new(const int sfd, const int init_state, const int event_flags,
     conn *c = conn_from_freelist();
 
     if (NULL == c) {
-        if (!(c = (conn *)malloc(sizeof(conn)))) {
-            perror("malloc()");
+        if (!(c = (conn *)calloc(1, sizeof(conn)))) {
+            fprintf(stderr, "calloc()\n");
             return NULL;
         }
         c->rbuf = c->wbuf = 0;
@@ -284,13 +281,8 @@ conn *conn_new(const int sfd, const int init_state, const int event_flags,
 
         if (c->rbuf == 0 || c->wbuf == 0 || c->ilist == 0 || c->iov == 0 ||
                 c->msglist == 0) {
-            if (c->rbuf != 0) free(c->rbuf);
-            if (c->wbuf != 0) free(c->wbuf);
-            if (c->ilist !=0) free(c->ilist);
-            if (c->iov != 0) free(c->iov);
-            if (c->msglist != 0) free(c->msglist);
-            free(c);
-            perror("malloc()");
+            conn_free(c);
+            fprintf(stderr, "malloc()\n");
             return NULL;
         }
 
@@ -334,6 +326,7 @@ conn *conn_new(const int sfd, const int init_state, const int event_flags,
         if (conn_add_to_freelist(c)) {
             conn_free(c);
         }
+        perror("event_add");
         return NULL;
     }
 
@@ -629,7 +622,7 @@ static void out_string(conn *c, const char *str) {
     }
 
     memcpy(c->wbuf, str, len);
-    memcpy(c->wbuf + len, "\r\n", 3);
+    memcpy(c->wbuf + len, "\r\n", 2);
     c->wbytes = len + 2;
     c->wcurr = c->wbuf;
 
@@ -680,37 +673,59 @@ static void complete_nread(conn *c) {
  */
 int do_store_item(item *it, int comm) {
     char *key = ITEM_key(it);
-    DBT dbkey, dbdata;
     int ret;
+    item *old_it = NULL;
+    item *new_it = NULL;
+    int stored = 0;
+    int flags;
 
     if (comm == NREAD_ADD || comm == NREAD_REPLACE) {
-        BDB_CLEANUP_DBT();
-        dbkey.data = key;
-        dbkey.size = strlen(key);
-        ret = dbp->exists(dbp, NULL, &dbkey, 0);
-        if (ret == DB_NOTFOUND){
-            if (comm == NREAD_REPLACE){
-                return 0;
-            }
-        }else{
-            if (comm == NREAD_ADD){
-                return 0;
-            }
+        ret = item_exists(key, strlen(key));
+        if ((ret == 0 && comm == NREAD_REPLACE) ||
+            (ret == 1 && comm == NREAD_ADD) ){
+               return 0;
         }
+    } else if (comm == NREAD_APPEND || comm == NREAD_PREPEND){
+        /* get orignal item */
+        old_it = item_get(key, strlen(key));
+        if (old_it == NULL){
+            return 0;
+        }
+        
+        /* we have it and old_it here - alloc memory to hold both */
+        /* flags was already lost - so recover them from ITEM_suffix(it) */
+        flags = (int) strtol(ITEM_suffix(old_it), (char **) NULL, 10);        
+        new_it = item_alloc1(key, it->nkey, flags, it->nbytes + old_it->nbytes - 2 /* CRLF */);
+        if (new_it == NULL) {
+            /* SERVER_ERROR out of memory */
+            if (old_it != NULL)
+                item_free(old_it);
+            return 0;
+        }
+        
+        /* copy data from it and old_it to new_it */        
+        if (comm == NREAD_APPEND) {
+            memcpy(ITEM_data(new_it), ITEM_data(old_it), old_it->nbytes);
+            memcpy(ITEM_data(new_it) + old_it->nbytes - 2 /* CRLF */, ITEM_data(it), it->nbytes);
+        } else {
+            /* NREAD_PREPEND */
+            memcpy(ITEM_data(new_it), ITEM_data(it), it->nbytes);
+            memcpy(ITEM_data(new_it) + it->nbytes - 2 /* CRLF */, ITEM_data(old_it), old_it->nbytes);
+        }
+        
+        it = new_it;
     }
-    /* now we put the item in bdb anyway */
-    BDB_CLEANUP_DBT();
-    dbkey.data = key;
-    dbkey.size = strlen(key);
-    dbdata.data = it;
-    dbdata.size = ITEM_ntotal(it);
+        
+    ret = item_put(key, strlen(key), it);
+    
+    if (old_it != NULL)
+        item_free(old_it);
+    if (old_it != NULL)
+        item_free(new_it);
 
-    if ((ret = dbp->put(dbp, NULL, &dbkey, &dbdata, 0)) == 0) {
+    if (ret  == 0) {
         return 1;
     } else {
-        if (settings.verbose > 1) {
-            fprintf(stderr, "dbp->put: %s\n", db_strerror(ret));
-        }
         return 0;
     }
 }
@@ -725,7 +740,7 @@ typedef struct token_s {
 #define KEY_TOKEN 1
 #define KEY_MAX_LENGTH 250
 
-#define MAX_TOKENS 7
+#define MAX_TOKENS 8
 
 /*
  * Tokenize the command string by replacing whitespace with '\0' and update
@@ -791,7 +806,7 @@ static void write_and_free(conn *c, char *buf, int bytes) {
         conn_set_state(c, conn_write);
         c->write_and_go = conn_read;
     } else {
-        out_string(c, "SERVER_ERROR out of memory");
+        out_string(c, "SERVER_ERROR out of memory writing stats");
     }
 }
 
@@ -1062,7 +1077,7 @@ static void process_stat(conn *c, token_t *tokens, const size_t ntokens) {
         int res;
 
         if ((wbuf = (char *)malloc(wsize)) == NULL) {
-            out_string(c, "SERVER_ERROR out of memory");
+            out_string(c, "SERVER_ERROR out of memory writing stats maps");
             return;
         }
 
@@ -1096,17 +1111,14 @@ static void process_stat(conn *c, token_t *tokens, const size_t ntokens) {
 
 /* ntokens is overwritten here... shrug.. */
 static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens) {
-    bool stop = false;
     char *key;
     size_t nkey;
     int i = 0;
-    int ret;
     item *it = NULL;
     token_t *key_token = &tokens[KEY_TOKEN];
     int stats_get_cmds   = 0;
     int stats_get_hits   = 0;
     int stats_get_misses = 0;
-    DBT dbkey, dbdata;
     assert(c != NULL);
 
     do {
@@ -1126,51 +1138,8 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens)
             }
 
             stats_get_cmds++;
-
-            /* first, alloc a fixed size */
-            it = item_alloc2(settings.item_buf_size);
-            if (it == 0) {
-                out_string(c, "SERVER_ERROR out of memory");
-                return;
-            }
-
-            BDB_CLEANUP_DBT();
-            dbkey.data = key;
-            dbkey.size = nkey;
-            dbdata.ulen = settings.item_buf_size;
-            dbdata.data = it;
-            dbdata.flags = DB_DBT_USERMEM;
-
-			stop = false;
-            /* try to get a item from bdb */
-            while (!stop) {
-                switch (ret = dbp->get(dbp, NULL, &dbkey, &dbdata, 0)) {
-                case DB_BUFFER_SMALL:    /* user mem small */
-                    /* free the original smaller buffer */
-                    item_free(it);
-                    /* alloc the correct size */
-                    it = item_alloc2(dbdata.size);
-                    if (it == 0) {
-                        out_string(c, "SERVER_ERROR out of memory");
-                        return;
-                    }
-                    dbdata.ulen = dbdata.size;
-                    dbdata.data = it;
-                    break;
-                case 0:                  /* Success. */
-                    stop = true;
-                    break;
-                default:
-                    /* TODO: may cause bug here, if return DB_BUFFER_SMALL then retun non-zero again
-                     * here 'it' may not a full one. a item buffer larger than item_buf_size may be added to freelist */
-                    item_free(it);
-                    it = 0;
-                    stop = true;
-                    if (settings.verbose > 1) {
-                        fprintf(stderr, "dbp->get: %s\n", db_strerror(ret));
-                    }
-                }
-            }
+            
+            it = item_get(key, nkey);
 
             if (it) {
                 if (i >= c->isize) {
@@ -1180,7 +1149,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens)
                         c->ilist = new_list;
                     } else { 
                         item_free(it);
-                        it = 0;
+                        it = NULL;
                         break;
                     }
                 }
@@ -1198,7 +1167,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens)
                    add_iov(c, ITEM_suffix(it), it->nsuffix + it->nbytes) != 0)
                    {
                        item_free(it);
-                       it = 0;
+                       it = NULL;
                        break;
                    }
 
@@ -1240,7 +1209,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens)
     */
     if (key_token->value != NULL || add_iov(c, "END\r\n", 5) != 0
         || (c->udp && build_udp_headers(c) != 0)) {
-        out_string(c, "SERVER_ERROR out of memory");
+        out_string(c, "SERVER_ERROR out of memory writing get response");
     }
     else {
         conn_set_state(c, conn_mwrite);
@@ -1285,8 +1254,8 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
 
     it = item_alloc1(key, nkey, flags, vlen+2);
 
-    if (it == 0) {
-        out_string(c, "SERVER_ERROR out of memory");
+    if (it == NULL) {
+        out_string(c, "SERVER_ERROR out of memory storing object");
         /* swallow the data line */
         c->write_and_go = conn_swallow;
         c->sbytes = vlen + 2;
@@ -1337,134 +1306,61 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
  * returns a response string to send back to the client.
  */
 char *do_add_delta(const bool incr, const int64_t delta, char *buf, char *key, size_t nkey) {
-    bool stop = false;
-
     char *ptr;
     int64_t value;
-    int new_vlen;
-
-    int flaglen,new_vlenlen;
-    uint8_t new_nsuffix;
-    char new_vlenstr[16];
-    char new_suffix[SUFFIX_SIZE];
-
-    int new_ntotal;
-
-    DBT dbkey, dbdata;
-    item *it = NULL;
+    int vlen, flags, ret;
+    item *old_it = NULL;
     item *new_it = NULL;
-    
-    int ret;
-    char *p;
 
-    /* first, alloc a fixed size */
-    it = item_alloc2(settings.item_buf_size);
-    if (it == 0) {
-        return "SERVER_ERROR out of memory";
+    /* get orignal item */
+    old_it = item_get(key, nkey);
+    if (old_it == NULL){
+        return "NOT_FOUND";
     }
 
-    BDB_CLEANUP_DBT();
-    dbkey.data = key;
-    dbkey.size = nkey;
-    dbdata.ulen = settings.item_buf_size;
-    dbdata.flags = DB_DBT_USERMEM;
-    dbdata.data = it;
-
-    /* try to get the old item from bdb */
-    while (!stop) {
-        switch (ret = dbp->get(dbp, NULL, &dbkey, &dbdata, 0)) {
-        case DB_BUFFER_SMALL:    /* user mem small */
-            /* free the original smaller buffer */
-            item_free(it);
-            /* alloc the correct size */
-            it = item_alloc2(dbdata.size);
-            if (it == NULL) {
-                return "SERVER_ERROR out of memory";
-            }
-            dbdata.ulen = dbdata.size;
-            dbdata.data = it;
-            break;
-        case 0:
-            stop = true;
-            break;
-        case DB_NOTFOUND:
-            item_free(it);
-            return "NOT_FOUND";
-        default:
-            item_free(it);
-            if (settings.verbose > 1) {
-                fprintf(stderr, "dbp->get: %s\n", db_strerror(ret));
-            }
-            return "SERVER_ERROR dbp->get error";
-        }
-    }
-
-    ptr = ITEM_data(it);
-
-    /* while ((*ptr != '\0') && (*ptr < '0' && *ptr > '9')) ptr++; */   // BUG: can't be true
-
+    /* get orignal digital value */
+    ptr = ITEM_data(old_it);
+    while ((*ptr != '\0') && (*ptr < '0' && *ptr > '9')) ptr++;   // BUG: can't be true
     /* non-digit will cause strtoull stop :) This is a triky. */
     value = strtoull(ptr, NULL, 10);
-
     if(errno == ERANGE) {
         return "CLIENT_ERROR cannot increment or decrement non-numeric value";
     }
 
+    /* cacl new value */
     if (incr)
         value += delta;
     else {
         if (delta >= value) value = 0;
         else value -= delta;
     }
-    new_vlen = sprintf(buf, "%llu", value);
+    vlen = sprintf(buf, "%llu", value);
 
-    /* to construct new suffix string */
-    p = ITEM_suffix(it) + 1;
-    p = memchr(p, ' ', it->nsuffix - 1);
-    if (p == NULL){
-        return "SERVER_ERROR not vaild suffix string";
-    }
-    p++;
-    flaglen = p - ITEM_suffix(it); /* include two spaces */
-    new_vlenlen = sprintf(new_vlenstr, "%d", new_vlen);
-    memcpy(new_suffix, ITEM_suffix(it), flaglen);
-    memcpy(new_suffix + flaglen, new_vlenstr, new_vlenlen);
-    memcpy(new_suffix + flaglen + new_vlenlen, "\r\n", 2);
-
-    /* free the old item buffer */
-    item_free(it);
-
-    /* to construct new item */
-    new_nsuffix = flaglen + new_vlenlen + 2;
-    new_ntotal = sizeof(struct _stritem) + nkey + new_nsuffix + new_vlen + 2;
-    new_it = item_alloc2(new_ntotal);
+    /* flags was already lost - so recover them from ITEM_suffix(it) */
+    flags = (int) strtol(ITEM_suffix(old_it), (char **) NULL, 10);
+            
+    /* construct new item */
+    new_it = item_alloc1(key, nkey, flags, vlen + 2);
     if (new_it == NULL) {
-        return "SERVER_ERROR out of memory";
+        /* SERVER_ERROR out of memory */
+        if (old_it != NULL)
+            item_free(old_it);
+        return "SERVER_ERROR out of memory processing arithmetic";
     }
-    new_it->nkey = nkey;
-    new_it->nsuffix = new_nsuffix;
-    new_it->nbytes = new_vlen + 2;
-    memcpy(ITEM_key(new_it), key, nkey);
-    memcpy(ITEM_suffix(new_it), new_suffix, new_nsuffix);
-    memcpy(ITEM_data(new_it), buf, new_vlen);
-    memcpy(ITEM_data(new_it) + new_vlen, "\r\n", 2);
+    memcpy(ITEM_data(new_it), buf, vlen);
+    memcpy(ITEM_data(new_it) + vlen, "\r\n", 2);
+    
+    /* put new item into storage */
+    ret = item_put(key, nkey, new_it);
 
-    /* now we put the new item in bdb anyway */
-    BDB_CLEANUP_DBT();
-    dbkey.data = ITEM_key(new_it);
-    dbkey.size = new_it->nkey;
-    dbdata.data = new_it;
-    dbdata.size = ITEM_ntotal(new_it);
-    ret = dbp->put(dbp, NULL, &dbkey, &dbdata, 0);
-    if (ret != 0) {
-        if (settings.verbose > 1) {
-            fprintf(stderr, "dbp->put: %s\n", db_strerror(ret));
-        }
+    if (old_it != NULL)
+        item_free(old_it);
+    if (old_it != NULL)
         item_free(new_it);
-        return "SERVER_ERROR dbp->put fail";
-    }
-    item_free(new_it);
 
+    if (ret != 0) {
+        return "SERVER_ERROR while put a item";
+    }   
     return buf;
 }
 
@@ -1472,28 +1368,27 @@ static void process_delete_command(conn *c, token_t *tokens, const size_t ntoken
     char *key;
     size_t nkey;
     int ret;
-    DBT dbkey, dbdata;
-
     assert(c != NULL);
-
     key = tokens[KEY_TOKEN].value;
     nkey = tokens[KEY_TOKEN].length;
-
     if(nkey > KEY_MAX_LENGTH) {
         out_string(c, "CLIENT_ERROR bad command line format");
         return;
     }
-
-    BDB_CLEANUP_DBT();
-    dbkey.data = key;
-    dbkey.size = strlen(key);
-    ret = dbp->del(dbp, NULL, &dbkey, 0);
-    if (ret == 0){
+    switch (ret = item_delete(key, nkey)) {
+    case 0:
         out_string(c, "DELETED");
-    }else{
+        break;
+    case 1:
         out_string(c, "NOT_FOUND");
+        break;
+    case -1:
+        out_string(c, "SERVER_ERROR while delete a item");
+        break;
+    default:
+        out_string(c, "SERVER_ERROR nothing to do");
     }
-
+    return;
 }
 
 static void process_verbosity_command(conn *c, token_t *tokens, const size_t ntokens) {
@@ -1720,7 +1615,7 @@ static void process_command(conn *c, char *command) {
     c->msgused = 0;
     c->iovused = 0;
     if (add_msghdr(c) != 0) {
-        out_string(c, "SERVER_ERROR out of memory");
+        out_string(c, "SERVER_ERROR out of memory preparing response");
         return;
     }
 
@@ -1730,10 +1625,12 @@ static void process_command(conn *c, char *command) {
 
         process_get_command(c, tokens, ntokens);
 
-    } else if (ntokens == 6 &&
+    } else if ((ntokens == 6 || ntokens == 7) &&
                ((strcmp(tokens[COMMAND_TOKEN].value, "add") == 0 && (comm = NREAD_ADD)) ||
                 (strcmp(tokens[COMMAND_TOKEN].value, "set") == 0 && (comm = NREAD_SET)) ||
-                (strcmp(tokens[COMMAND_TOKEN].value, "replace") == 0 && (comm = NREAD_REPLACE)))) {
+                (strcmp(tokens[COMMAND_TOKEN].value, "replace") == 0 && (comm = NREAD_REPLACE)) ||
+                (strcmp(tokens[COMMAND_TOKEN].value, "prepend") == 0 && (comm = NREAD_PREPEND)) ||
+                (strcmp(tokens[COMMAND_TOKEN].value, "append") == 0 && (comm = NREAD_APPEND)) )) {
 
         process_update_command(c, tokens, ntokens, comm);
 
@@ -1889,7 +1786,7 @@ static int try_read_network(conn *c) {
                 if (settings.verbose > 0)
                     fprintf(stderr, "Couldn't realloc input buffer\n");
                 c->rbytes = 0; /* ignore what we read */
-                out_string(c, "SERVER_ERROR out of memory");
+                out_string(c, "SERVER_ERROR out of memory reading request");
                 c->write_and_go = conn_closing;
                 return 1;
             }
@@ -1906,14 +1803,19 @@ static int try_read_network(conn *c) {
             c->request_addr_size = 0;
         }
 
-        res = read(c->sfd, c->rbuf + c->rbytes, c->rsize - c->rbytes);
+        int avail = c->rsize - c->rbytes;
+        res = read(c->sfd, c->rbuf + c->rbytes, avail);
         if (res > 0) {
             STATS_LOCK();
             stats.bytes_read += res;
             STATS_UNLOCK();
             gotdata = 1;
             c->rbytes += res;
-            continue;
+            if (res == avail) {
+                continue;
+            } else {
+                break;
+            }
         }
         if (res == 0) {
             /* connection closed */
@@ -1922,7 +1824,9 @@ static int try_read_network(conn *c) {
         }
         if (res == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-            else return 0;
+            /* Should close on unhandled errors. */
+            conn_set_state(c, conn_closing);
+            return 1;
         }
     }
     return gotdata;
@@ -1946,18 +1850,23 @@ static bool update_event(conn *c, const int new_flags) {
  * Sets whether we are listening for new connections or not.
  */
 void accept_new_conns(const bool do_accept) {
+    conn *next;
+
     if (! is_listen_thread())
         return;
-    if (do_accept) {
-        update_event(listen_conn, EV_READ | EV_PERSIST);
-        if (listen(listen_conn->sfd, 1024) != 0) {
-            perror("listen");
+
+    for (next = listen_conn; next; next = next->next) {
+        if (do_accept) {
+            update_event(next, EV_READ | EV_PERSIST);
+            if (listen(next->sfd, 1024) != 0) {
+                perror("listen");
+            }
         }
-    }
-    else {
-        update_event(listen_conn, 0);
-        if (listen(listen_conn->sfd, 0) != 0) {
-            perror("listen");
+        else {
+            update_event(next, 0);
+            if (listen(next->sfd, 0) != 0) {
+                perror("listen");
+            }
         }
     }
 }
@@ -2034,7 +1943,7 @@ static void drive_machine(conn *c) {
     bool stop = false;
     int sfd, flags = 1;
     socklen_t addrlen;
-    struct sockaddr addr;
+    struct sockaddr_storage addr;
     int res;
 
     assert(c != NULL);
@@ -2044,7 +1953,7 @@ static void drive_machine(conn *c) {
         switch(c->state) {
         case conn_listening:
             addrlen = sizeof(addr);
-            if ((sfd = accept(c->sfd, &addr, &addrlen)) == -1) {
+            if ((sfd = accept(c->sfd, (struct sockaddr *)&addr, &addrlen)) == -1) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     /* these are transient, so don't log anything */
                     stop = true;
@@ -2265,11 +2174,11 @@ void event_handler(const int fd, const short which, void *arg) {
     return;
 }
 
-static int new_socket(const bool is_udp) {
+static int new_socket(struct addrinfo *ai) {
     int sfd;
     int flags;
 
-    if ((sfd = socket(AF_INET, is_udp ? SOCK_DGRAM : SOCK_STREAM, 0)) == -1) {
+    if ((sfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol)) == -1) {
         perror("socket()");
         return -1;
     }
@@ -2318,46 +2227,106 @@ static void maximize_sndbuf(const int sfd) {
         fprintf(stderr, "<%d send buffer was %d, now %d\n", sfd, old_size, last_good);
 }
 
-
 static int server_socket(const int port, const bool is_udp) {
     int sfd;
     struct linger ling = {0, 0};
-    struct sockaddr_in addr;
+    struct addrinfo *ai;
+    struct addrinfo *next;
+    struct addrinfo hints;
+    char port_buf[NI_MAXSERV];
+    int error;
+    int success = 0;
+
     int flags =1;
-
-    if ((sfd = new_socket(is_udp)) == -1) {
-        return -1;
-    }
-
-    setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, (void *)&flags, sizeof(flags));
-    if (is_udp) {
-        maximize_sndbuf(sfd);
-    } else {
-        setsockopt(sfd, SOL_SOCKET, SO_KEEPALIVE, (void *)&flags, sizeof(flags));
-        setsockopt(sfd, SOL_SOCKET, SO_LINGER, (void *)&ling, sizeof(ling));
-        setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, (void *)&flags, sizeof(flags));
-    }
 
     /*
      * the memset call clears nonstandard fields in some impementations
      * that otherwise mess things up.
      */
-    memset(&addr, 0, sizeof(addr));
+    memset(&hints, 0, sizeof (hints));
+    hints.ai_flags = AI_PASSIVE|AI_ADDRCONFIG;
+    if (is_udp)
+    {
+        hints.ai_protocol = IPPROTO_UDP;
+        hints.ai_socktype = SOCK_DGRAM;
+        hints.ai_family = AF_INET; /* This left here because of issues with OSX 10.5 */
+    } else {
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_protocol = IPPROTO_TCP;
+        hints.ai_socktype = SOCK_STREAM;
+    }
 
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr = settings.interf;
-    if (bind(sfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
-        perror("bind()");
-        close(sfd);
-        return -1;
+    snprintf(port_buf, NI_MAXSERV, "%d", port);
+    error= getaddrinfo(settings.inter, port_buf, &hints, &ai);
+    if (error != 0) {
+      if (error != EAI_SYSTEM)
+        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(error));
+      else
+        perror("getaddrinfo()");
+
+      return 1;
     }
-    if (!is_udp && listen(sfd, 1024) == -1) {
-        perror("listen()");
-        close(sfd);
-        return -1;
+
+    for (next= ai; next; next= next->ai_next) {
+        conn *listen_conn_add;
+        if ((sfd = new_socket(next)) == -1) {
+            freeaddrinfo(ai);
+            return 1;
+        }
+
+        setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, (void *)&flags, sizeof(flags));
+        if (is_udp) {
+            maximize_sndbuf(sfd);
+        } else {
+            setsockopt(sfd, SOL_SOCKET, SO_KEEPALIVE, (void *)&flags, sizeof(flags));
+            setsockopt(sfd, SOL_SOCKET, SO_LINGER, (void *)&ling, sizeof(ling));
+            setsockopt(sfd, IPPROTO_TCP, TCP_NODELAY, (void *)&flags, sizeof(flags));
+        }
+
+        if (bind(sfd, next->ai_addr, next->ai_addrlen) == -1) {
+            if (errno != EADDRINUSE) {
+                perror("bind()");
+                close(sfd);
+                freeaddrinfo(ai);
+                return 1;
+            }
+            close(sfd);
+            continue;
+        } else {
+          success++;
+          if (!is_udp && listen(sfd, 1024) == -1) {
+              perror("listen()");
+              close(sfd);
+              freeaddrinfo(ai);
+              return 1;
+          }
+      }
+
+      if (is_udp)
+      {
+        int c;
+
+        for (c = 0; c < settings.num_threads; c++) {
+            /* this is guaranteed to hit all threads because we round-robin */
+            dispatch_conn_new(sfd, conn_read, EV_READ | EV_PERSIST,
+                              UDP_READ_BUFFER_SIZE, 1);
+        }
+      } else {
+        if (!(listen_conn_add = conn_new(sfd, conn_listening,
+                                         EV_READ | EV_PERSIST, 1, false, main_base))) {
+            fprintf(stderr, "failed to create listening connection\n");
+            exit(EXIT_FAILURE);
+        }
+
+        listen_conn_add->next = listen_conn;
+        listen_conn = listen_conn_add;
+      }
     }
-    return sfd;
+
+    freeaddrinfo(ai);
+
+    /* Return zero iff we detected no errors in starting up connections */
+    return success == 0;
 }
 
 static int new_socket_unix(void) {
@@ -2387,11 +2356,11 @@ static int server_socket_unix(const char *path, int access_mask) {
     int old_umask;
 
     if (!path) {
-        return -1;
+        return 1;
     }
 
     if ((sfd = new_socket_unix()) == -1) {
-        return -1;
+        return 1;
     }
 
     /*
@@ -2419,30 +2388,21 @@ static int server_socket_unix(const char *path, int access_mask) {
         perror("bind()");
         close(sfd);
         umask(old_umask);
-        return -1;
+        return 1;
     }
     umask(old_umask);
     if (listen(sfd, 1024) == -1) {
         perror("listen()");
         close(sfd);
-        return -1;
+        return 1;
     }
-    return sfd;
-}
+    if (!(listen_conn = conn_new(sfd, conn_listening,
+                                     EV_READ | EV_PERSIST, 1, false, main_base))) {
+        fprintf(stderr, "failed to create listening connection\n");
+        exit(EXIT_FAILURE);
+    }
 
-/* listening socket */
-static int l_socket = 0;
-
-/* udp socket */
-static int u_socket = -1;
-
-/* invoke right before gdb is called, on assert */
-void pre_gdb(void) {
-    int i;
-    if (l_socket > -1) close(l_socket);
-    if (u_socket > -1) close(u_socket);
-    for (i = 3; i <= 500; i++) close(i); /* so lame */
-    kill(getpid(), SIGABRT);
+    return 0;
 }
 
 static void usage(void) {
@@ -2653,6 +2613,12 @@ int main (int argc, char **argv) {
     struct passwd *pw;
     struct sigaction sa;
     struct rlimit rlim;
+    /* listening socket */
+    static int *l_socket = NULL;
+
+    /* udp socket */
+    static int *u_socket = NULL;
+    static int u_socket_count = 0;
 
     char *portstr = NULL;
 
@@ -2704,12 +2670,7 @@ int main (int argc, char **argv) {
             settings.verbose++;
             break;
         case 'l':
-            if (inet_pton(AF_INET, optarg, &addr) <= 0) {
-                fprintf(stderr, "Illegal address: %s\n", optarg);
-                return 1;
-            } else {
-                settings.interf = addr;
-            }
+            settings.inter= strdup(optarg);
             break;
         case 'd':
             daemonize = true;
@@ -2862,28 +2823,14 @@ int main (int argc, char **argv) {
         }
     }
 
-    /*
-     * initialization order: first create the listening sockets
-     * (may need root on low ports), then drop root if needed,
-     * then daemonise if needed, then init libevent (in some cases
-     * descriptors created by libevent wouldn't survive forking).
-     */
-
-    /* create the listening socket and bind it */
-    if (settings.socketpath == NULL) {
-        l_socket = server_socket(settings.port, 0);
-        if (l_socket == -1) {
-            fprintf(stderr, "failed to listen\n");
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    if (settings.udpport > 0 && settings.socketpath == NULL) {
-        /* create the UDP listening socket and bind it */
-        u_socket = server_socket(settings.udpport, 1);
-        if (u_socket == -1) {
-            fprintf(stderr, "failed to listen on UDP port %d\n", settings.udpport);
-            exit(EXIT_FAILURE);
+    /* daemonize if requested */
+    /* if we want to ensure our ability to dump core, don't chdir to / */
+    if (daemonize) {
+        int res;
+        res = daemon(maxcore, settings.verbose);
+        if (res == -1) {
+            fprintf(stderr, "failed to daemon() in order to daemonize\n");
+            return 1;
         }
     }
 
@@ -2902,27 +2849,6 @@ int main (int argc, char **argv) {
             return 1;
         }
     }
-
-    /* create unix mode sockets after dropping privileges */
-    if (settings.socketpath != NULL) {
-        l_socket = server_socket_unix(settings.socketpath,settings.access);
-        if (l_socket == -1) {
-            fprintf(stderr, "failed to listen\n");
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    /* daemonize if requested */
-    /* if we want to ensure our ability to dump core, don't chdir to / */
-    if (daemonize) {
-        int res;
-        res = daemon(maxcore, settings.verbose);
-        if (res == -1) {
-            fprintf(stderr, "failed to daemon() in order to daemonize\n");
-            return 1;
-        }
-    }
-
 
     /* initialize main thread libevent instance */
     main_base = event_init();
@@ -2943,21 +2869,23 @@ int main (int argc, char **argv) {
         perror("failed to ignore SIGPIPE; sigaction");
         exit(EXIT_FAILURE);
     }
-    /* create the initial listening connection */
-    if (!(listen_conn = conn_new(l_socket, conn_listening,
-                                 EV_READ | EV_PERSIST, 1, false, main_base))) {
-        fprintf(stderr, "failed to create listening connection");
-        exit(EXIT_FAILURE);
-    }
     /* start up worker threads if MT mode */
     thread_init(settings.num_threads, main_base);
+    /* save the PID in if we're a daemon, do this after thread_init due to
+       a file descriptor handling bug somewhere in libevent */
+    if (daemonize)
+        save_pid(getpid(), pid_file);
 
     /* put all bdb init staff here to make sure all worker thread has beed initlized*/
     /* here we init bdb env and open db */
     bdb_env_init();
     bdb_db_open();
 
-   /* register atexit callback function */
+    /* start checkpoint and deadlock detect thread */
+    start_chkpoint_thread();
+    start_dl_detect_thread();
+    
+    /* register atexit callback function */
     if (0 != atexit(bdb_env_close)) {
         fprintf(stderr, "can not register close_env"); 
         exit(EXIT_FAILURE);
@@ -2971,27 +2899,49 @@ int main (int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    /* start checkpoint and deadlock detect thread */
-    start_chkpoint_thread();
-    start_dl_detect_thread();
-
-    /* save the PID in if we're a daemon, do this after thread_init due to
-       a file descriptor handling bug somewhere in libevent */
-    if (daemonize)
-        save_pid(getpid(), pid_file);
-
-    /* create the initial listening udp connection, monitored on all threads */
-    if (u_socket > -1) {
-        for (c = 0; c < settings.num_threads; c++) {
-            /* this is guaranteed to hit all threads because we round-robin */
-            dispatch_conn_new(u_socket, conn_read, EV_READ | EV_PERSIST,
-                              UDP_READ_BUFFER_SIZE, 1);
+    /* create unix mode sockets after dropping privileges */
+    if (settings.socketpath != NULL) {
+        if (server_socket_unix(settings.socketpath,settings.access)) {
+          fprintf(stderr, "failed to listen\n");
+          exit(EXIT_FAILURE);
         }
     }
+
+    /* create the listening socket, bind it, and init */
+    if (settings.socketpath == NULL) {
+        int udp_port;
+
+        if (server_socket(settings.port, 0)) {
+            fprintf(stderr, "failed to listen\n");
+            exit(EXIT_FAILURE);
+        }
+        /*
+         * initialization order: first create the listening sockets
+         * (may need root on low ports), then drop root if needed,
+         * then daemonise if needed, then init libevent (in some cases
+         * descriptors created by libevent wouldn't survive forking).
+         */
+        udp_port = settings.udpport ? settings.udpport : settings.port;
+
+        /* create the UDP listening socket and bind it */
+        if (server_socket(udp_port, 1)) {
+            fprintf(stderr, "failed to listen on UDP port %d\n", settings.udpport);
+            exit(EXIT_FAILURE);
+        }
+    }
+
     /* enter the event loop */
     event_base_loop(main_base, 0);
     /* remove the PID file if we're a daemon */
     if (daemonize)
         remove_pidfile(pid_file);
+    /* Clean up strdup() call for bind() address */
+    if (settings.inter)
+      free(settings.inter);
+    if (l_socket)
+      free(l_socket);
+    if (u_socket)
+      free(u_socket);
+
     return 0;
 }
