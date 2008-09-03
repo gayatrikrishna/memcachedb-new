@@ -63,6 +63,10 @@
 #endif
 #endif
 
+#ifndef IOV_MAX
+# define IOV_MAX 1024
+#endif
+
 /*
  * forward declarations
  */
