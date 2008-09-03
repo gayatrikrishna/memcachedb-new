@@ -114,6 +114,7 @@ struct bdb_settings {
     int txn_nosync;    /* DB_TXN_NOSYNC flag, if 1 will lose transaction's durability for performance */
     int dldetect_val; /* do deadlock detect every *db_lock_detect_val* millisecond, 0 for disable */
     int chkpoint_val;  /* do checkpoint every *db_chkpoint_val* second, 0 for disable */
+    int memp_trickle_val;  /* do checkpoint every *db_chkpoint_val* second, 0 for disable */
     u_int32_t db_flags; /* database open flags */
     u_int32_t env_flags; /* env open flags */
 
@@ -264,8 +265,10 @@ void bdb_settings_init(void);
 void bdb_env_init(void);
 void bdb_db_open(void);
 void start_chkpoint_thread(void);
+void start_memp_trickle_thread(void);
 void start_dl_detect_thread(void);
 void *bdb_chkpoint_thread __P((void *));
+void *bdb_memp_trickle_thread __P((void *));
 void *bdb_dl_detect_thread __P((void *));
 void bdb_event_callback __P((DB_ENV *, u_int32_t, void *));
 void bdb_db_close(void);
