@@ -2435,9 +2435,10 @@ static void usage(void) {
     printf("-A <num>      underlying page size in bytes, default is 4096, (512B ~ 64KB, power-of-two)\n");
     printf("-f <file>     filename of database, default is 'data.db'\n");
     printf("-H <dir>      env home of database, default is '/data1/memcachedb'\n");
-    printf("-T <db_type>  type of database, 'btree' or 'hash'. default is 'btree'\n");
+    printf("-B <db_type>  type of database, 'btree' or 'hash'. default is 'btree'\n");
     printf("-L <num>      log buffer size in kbytes, default is 32KB\n");
-    printf("-C <num>      do checkpoint every <num> seconds, 0 for disable, default is 60s\n");
+    printf("-C <num>      do checkpoint every <num> seconds, 0 for disable, default is 3 minutes\n");
+    printf("-T <num>      do memp_trickle every <num> seconds, 0 for disable, default is 30 seconds\n");
     printf("-D <num>      do deadlock detecting every <num> millisecond, 0 for disable, default is 100ms\n");
     printf("-N            enable DB_TXN_NOSYNC to gain big performance improved, default is off\n");
     printf("--------------------Replication Options-------------------------------\n");
@@ -2713,7 +2714,7 @@ int main (int argc, char **argv) {
         case 'H':
             bdb_settings.env_home = optarg;
             break;
-        case 'T':
+        case 'B':
             if (0 == strcmp(optarg, "btree")){
                 bdb_settings.db_type = DB_BTREE;
             }else if (0 == strcmp(optarg, "hash")){
@@ -2734,6 +2735,9 @@ int main (int argc, char **argv) {
             break;
         case 'C':
             bdb_settings.chkpoint_val = atoi(optarg);
+            break;
+        case 'T':
+            bdb_settings.memp_trickle_val = atoi(optarg);
             break;
         case 'D':
             bdb_settings.dldetect_val = atoi(optarg) * 1000;
@@ -2887,6 +2891,7 @@ int main (int argc, char **argv) {
 
     /* start checkpoint and deadlock detect thread */
     start_chkpoint_thread();
+    start_memp_trickle_thread();
     start_dl_detect_thread();
     
     /* register atexit callback function */

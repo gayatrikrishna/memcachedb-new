@@ -1,3 +1,7 @@
+2008-09-03 Steve Chu <stvchu@gmail.com>
+   * Replace the database type setting option '-T' with '-B'
+   * Now '-T' has new meaning that it fires a separate thread to do memp_trickle every xx seconds.
+   
 2008-09-01 Steve Chu <stvchu@gmail.com>
    * Now 'append' and 'prepend' commands are supported.
    * Merge bugfix code from Memecached community.

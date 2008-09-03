@@ -24,6 +24,7 @@
 #include <db.h>
 
 static pthread_t chk_ptid;
+static pthread_t mtri_ptid;
 static pthread_t dld_ptid;
 
 void bdb_settings_init(void)
@@ -36,7 +37,8 @@ void bdb_settings_init(void)
     bdb_settings.db_type = DB_BTREE;
     bdb_settings.txn_nosync = 0; /* default DB_TXN_NOSYNC is off */
     bdb_settings.dldetect_val = 100 * 1000; /* default is 100 millisecond */
-    bdb_settings.chkpoint_val = 60; /* default is 60 second */
+    bdb_settings.chkpoint_val = 60 * 3; /* default is 3 minutes */
+    bdb_settings.memp_trickle_val = 30; /* default is 30 second */
     bdb_settings.db_flags = DB_CREATE | DB_AUTO_COMMIT;
     bdb_settings.env_flags = DB_CREATE
                           | DB_INIT_LOCK 
@@ -267,6 +269,19 @@ void start_chkpoint_thread(void){
     }
 }
 
+void start_memp_trickle_thread(void){
+    if (bdb_settings.memp_trickle_val > 0){
+        /* Start a memp_trickle thread. */
+        if ((errno = pthread_create(
+            &mtri_ptid, NULL, bdb_memp_trickle_thread, (void *)env)) != 0) {
+            fprintf(stderr,
+                "failed spawning memp_trickle thread: %s\n",
+                strerror(errno));
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
 void start_dl_detect_thread(void){
     if (bdb_settings.dldetect_val > 0){
         /* Start a deadlock detecting thread. */
@@ -291,6 +306,28 @@ void *bdb_chkpoint_thread(void *arg)
     for (;; sleep(bdb_settings.chkpoint_val)) {
         if ((ret = dbenv->txn_checkpoint(dbenv, 0, 0, 0)) != 0) {
             dbenv->err(dbenv, ret, "checkpoint thread");
+        }
+        if (settings.verbose > 1) {
+            dbenv->errx(dbenv, "checkpoint thread: done");
+        }
+    }
+    return (NULL);
+}
+
+void *bdb_memp_trickle_thread(void *arg)
+{
+    DB_ENV *dbenv;
+    int ret, nwrotep;
+    dbenv = arg;
+    if (settings.verbose > 1) {
+        dbenv->errx(dbenv, "memp_trickle thread created: %lu", (u_long)pthread_self());
+    }
+    for (;; sleep(bdb_settings.memp_trickle_val)) {
+        if ((ret = dbenv->memp_trickle(dbenv, 40, &nwrotep)) != 0) {
+            dbenv->err(dbenv, ret, "memp_trickle thread, %d", nwrotep);
+        }
+        if (settings.verbose > 1) {
+            dbenv->errx(dbenv, "memp_trickle thread: done, %d", nwrotep);
         }
     }
     return (NULL);
