@@ -323,7 +323,7 @@ void *bdb_memp_trickle_thread(void *arg)
         dbenv->errx(dbenv, "memp_trickle thread created: %lu", (u_long)pthread_self());
     }
     for (;; sleep(bdb_settings.memp_trickle_val)) {
-        if ((ret = dbenv->memp_trickle(dbenv, 40, &nwrotep)) != 0) {
+        if ((ret = dbenv->memp_trickle(dbenv, 10, &nwrotep)) != 0) {
             dbenv->err(dbenv, ret, "memp_trickle thread, %d", nwrotep);
         }
         if (settings.verbose > 1) {
