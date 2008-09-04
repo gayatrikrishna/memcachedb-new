@@ -895,6 +895,8 @@ static void process_stat(conn *c, token_t *tokens, const size_t ntokens) {
         pos += sprintf(pos, "STAT txn_nosync %d\r\n", bdb_settings.txn_nosync);
         pos += sprintf(pos, "STAT dldetect_val %d\r\n", bdb_settings.dldetect_val);
         pos += sprintf(pos, "STAT chkpoint_val %d\r\n", bdb_settings.chkpoint_val);
+        pos += sprintf(pos, "STAT memp_trickle_val %d\r\n", bdb_settings.memp_trickle_val);
+        pos += sprintf(pos, "STAT memp_trickle_percent %d\r\n", bdb_settings.memp_trickle_percent);
         pos += sprintf(pos, "END");
         out_string(c, temp);
         return;
