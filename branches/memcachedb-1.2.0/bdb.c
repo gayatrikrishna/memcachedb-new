@@ -37,8 +37,9 @@ void bdb_settings_init(void)
     bdb_settings.db_type = DB_BTREE;
     bdb_settings.txn_nosync = 0; /* default DB_TXN_NOSYNC is off */
     bdb_settings.dldetect_val = 100 * 1000; /* default is 100 millisecond */
-    bdb_settings.chkpoint_val = 60 * 3; /* default is 3 minutes */
-    bdb_settings.memp_trickle_val = 30; /* default is 30 second */
+    bdb_settings.chkpoint_val = 60 * 5;
+    bdb_settings.memp_trickle_val = 30;
+    bdb_settings.memp_trickle_percent = 60; 
     bdb_settings.db_flags = DB_CREATE | DB_AUTO_COMMIT;
     bdb_settings.env_flags = DB_CREATE
                           | DB_INIT_LOCK 
@@ -301,7 +302,8 @@ void *bdb_chkpoint_thread(void *arg)
     int ret;
     dbenv = arg;
     if (settings.verbose > 1) {
-        dbenv->errx(dbenv, "checkpoint thread created: %lu", (u_long)pthread_self());
+        dbenv->errx(dbenv, "checkpoint thread created: %lu, every %d seconds", 
+                           (u_long)pthread_self(), bdb_settings.chkpoint_val);
     }
     for (;; sleep(bdb_settings.chkpoint_val)) {
         if ((ret = dbenv->txn_checkpoint(dbenv, 0, 0, 0)) != 0) {
@@ -320,14 +322,16 @@ void *bdb_memp_trickle_thread(void *arg)
     int ret, nwrotep;
     dbenv = arg;
     if (settings.verbose > 1) {
-        dbenv->errx(dbenv, "memp_trickle thread created: %lu", (u_long)pthread_self());
+        dbenv->errx(dbenv, "memp_trickle thread created: %lu, every %d seconds, %d%% pages should be clean.", 
+                           (u_long)pthread_self(), bdb_settings.memp_trickle_val,
+                           bdb_settings.memp_trickle_percent);
     }
     for (;; sleep(bdb_settings.memp_trickle_val)) {
-        if ((ret = dbenv->memp_trickle(dbenv, 10, &nwrotep)) != 0) {
-            dbenv->err(dbenv, ret, "memp_trickle thread, %d", nwrotep);
+        if ((ret = dbenv->memp_trickle(dbenv, bdb_settings.memp_trickle_percent, &nwrotep)) != 0) {
+            dbenv->err(dbenv, ret, "memp_trickle thread");
         }
         if (settings.verbose > 1) {
-            dbenv->errx(dbenv, "memp_trickle thread: done, %d", nwrotep);
+            dbenv->errx(dbenv, "memp_trickle thread: done, writing %d dirty pages", nwrotep);
         }
     }
     return (NULL);
@@ -339,7 +343,8 @@ void *bdb_dl_detect_thread(void *arg)
     struct timeval t;
     dbenv = arg;
     if (settings.verbose > 1) {
-        dbenv->errx(dbenv, "deadlock detecting thread created: %lu", (u_long)pthread_self());
+        dbenv->errx(dbenv, "deadlock detecting thread created: %lu, every %d millisecond",
+                           (u_long)pthread_self(), bdb_settings.dldetect_val);
     }
     while (!daemon_quit) {
         t.tv_sec = 0;

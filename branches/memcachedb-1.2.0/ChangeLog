@@ -1,6 +1,10 @@
+2008-09-04 Steve Chu <stvchu@gmail.com>
+   * New option '-e' to set percent of the pages in the cache that should be clean, used for memp_trickle call(only available when '-T' is presented).
+   
 2008-09-03 Steve Chu <stvchu@gmail.com>
    * Replace the database type setting option '-T' with '-B'
    * Now '-T' has new meaning that it fires a separate thread to do memp_trickle every xx seconds.
+   This feature makes the memory pool more effective by reducing too much frequent pages swapping.
    
 2008-09-01 Steve Chu <stvchu@gmail.com>
    * Now 'append' and 'prepend' commands are supported.

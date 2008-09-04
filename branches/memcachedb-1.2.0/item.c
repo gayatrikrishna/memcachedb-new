@@ -11,13 +11,6 @@
  *  $Id: item.c 2008-01-23 22:33:13Z steve $
  */
 
-/*
- * == Item Buffer Management ==
- *
- * If item buffer size larger than 'settings.item_buf_size', 
- * then we use malloc instead.
- */
-
 #include "memcachedb.h"
 #include <stdio.h>
 #include <errno.h>
@@ -237,7 +230,6 @@ item *item_get(char *key, size_t nkey){
             /* alloc the correct size */
             it = item_alloc2(dbdata.size);
             if (it == NULL) {
-                /* no memory */
                 return NULL;
             }
             dbdata.ulen = dbdata.size;

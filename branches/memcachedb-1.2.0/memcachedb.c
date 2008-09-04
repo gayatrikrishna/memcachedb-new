@@ -2437,8 +2437,9 @@ static void usage(void) {
     printf("-H <dir>      env home of database, default is '/data1/memcachedb'\n");
     printf("-B <db_type>  type of database, 'btree' or 'hash'. default is 'btree'\n");
     printf("-L <num>      log buffer size in kbytes, default is 32KB\n");
-    printf("-C <num>      do checkpoint every <num> seconds, 0 for disable, default is 3 minutes\n");
+    printf("-C <num>      do checkpoint every <num> seconds, 0 for disable, default is 5 minutes\n");
     printf("-T <num>      do memp_trickle every <num> seconds, 0 for disable, default is 30 seconds\n");
+    printf("-e <num>      percent of the pages in the cache that should be clean, default is 60%%\n");
     printf("-D <num>      do deadlock detecting every <num> millisecond, 0 for disable, default is 100ms\n");
     printf("-N            enable DB_TXN_NOSYNC to gain big performance improved, default is off\n");
     printf("--------------------Replication Options-------------------------------\n");
@@ -2646,7 +2647,7 @@ int main (int argc, char **argv) {
     setbuf(stderr, NULL);
 
     /* process arguments */
-    while ((c = getopt(argc, argv, "a:U:p:s:c:hikvl:dru:P:t:b:f:H:T:m:A:L:C:D:NEMSR:O:")) != -1) {
+    while ((c = getopt(argc, argv, "a:U:p:s:c:hikvl:dru:P:t:b:f:H:B:m:A:L:C:T:e:D:NEMSR:O:")) != -1) {
         switch (c) {
         case 'a':
             /* access for unix domain socket, as octal mask (like chmod)*/
@@ -2694,7 +2695,7 @@ int main (int argc, char **argv) {
             settings.num_threads = atoi(optarg);
             if (settings.num_threads == 0) {
                 fprintf(stderr, "Number of threads must be greater than 0\n");
-                return 1;
+                exit(EXIT_FAILURE);
             }
             break;
 #endif
@@ -2702,7 +2703,7 @@ int main (int argc, char **argv) {
             settings.item_buf_size = atoi(optarg);
             if(settings.item_buf_size < 512){
                 fprintf(stderr, "item buf size must be larger than 512 bytes\n");
-                return 1;
+                exit(EXIT_FAILURE);
             } 
             if(settings.item_buf_size > 256 * 1024){
                 fprintf(stderr, "Warning: item buffer size(-b) larger than 256KB may cause performance issue\n");
@@ -2721,7 +2722,7 @@ int main (int argc, char **argv) {
                 bdb_settings.db_type = DB_HASH;
             }else{
                 fprintf(stderr, "Unknown databasetype, only 'btree' or 'hash' is available.\n");
-                exit(1);
+                exit(EXIT_FAILURE);
             }
             break;
         case 'm':
@@ -2739,6 +2740,14 @@ int main (int argc, char **argv) {
         case 'T':
             bdb_settings.memp_trickle_val = atoi(optarg);
             break;
+        case 'e':
+            bdb_settings.memp_trickle_percent = atoi(optarg);
+            if (bdb_settings.memp_trickle_percent < 0 || 
+                bdb_settings.memp_trickle_percent > 100){
+                fprintf(stderr, "memp_trickle_percent should be 0 ~ 100.\n");
+                exit(EXIT_FAILURE);
+            }
+            break;
         case 'D':
             bdb_settings.dldetect_val = atoi(optarg) * 1000;
             break;
@@ -2748,7 +2757,7 @@ int main (int argc, char **argv) {
         case 'M':
             if (bdb_settings.rep_start_policy == DB_REP_CLIENT){
                 fprintf(stderr, "Can't not be a Master and Slave at same time.\n");
-                exit(1);
+                exit(EXIT_FAILURE);
             }else{
                bdb_settings.rep_start_policy = DB_REP_MASTER;
             }
@@ -2756,7 +2765,7 @@ int main (int argc, char **argv) {
        case 'S':
             if (bdb_settings.rep_start_policy == DB_REP_MASTER){
                 fprintf(stderr, "Can't not be a Master and Slave at same time.\n");
-                exit(1);
+                exit(EXIT_FAILURE);
             }else{
                bdb_settings.rep_start_policy = DB_REP_CLIENT;
             }
@@ -2766,7 +2775,7 @@ int main (int argc, char **argv) {
            bdb_settings.rep_localhost = strtok(optarg, ":");
             if ((portstr = strtok(NULL, ":")) == NULL) {
                 fprintf(stderr, "Bad host specification.\n");
-                return 1;
+                exit(EXIT_FAILURE);
             }
            bdb_settings.rep_localport = (unsigned short)atoi(portstr);
             break;
@@ -2774,14 +2783,14 @@ int main (int argc, char **argv) {
             bdb_settings.rep_remotehost = strtok(optarg, ":");
             if ((portstr = strtok(NULL, ":")) == NULL) {
                 fprintf(stderr, "Bad host specification.\n");
-                return 1;
+                exit(EXIT_FAILURE);
             }
             bdb_settings.rep_remoteport = (unsigned short)atoi(portstr);
             break;
 
         default:
             fprintf(stderr, "Illegal argument \"%c\"\n", c);
-            return 1;
+            exit(EXIT_FAILURE);
         }
     }
 
