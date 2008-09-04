@@ -114,7 +114,8 @@ struct bdb_settings {
     int txn_nosync;    /* DB_TXN_NOSYNC flag, if 1 will lose transaction's durability for performance */
     int dldetect_val; /* do deadlock detect every *db_lock_detect_val* millisecond, 0 for disable */
     int chkpoint_val;  /* do checkpoint every *db_chkpoint_val* second, 0 for disable */
-    int memp_trickle_val;  /* do checkpoint every *db_chkpoint_val* second, 0 for disable */
+    int memp_trickle_val;  /* do memp_trickle every *memp_trickle_val* second, 0 for disable */
+    int memp_trickle_percent; /* percent of the pages in the cache that should be clean.*/
     u_int32_t db_flags; /* database open flags */
     u_int32_t env_flags; /* env open flags */
 
