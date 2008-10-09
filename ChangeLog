@@ -1,3 +1,9 @@
+2008-10-08 Steve Chu <stvchu@gmail.com>
+   * lots of statistics code clean up; stats command adjusted for better rendering; now more replication statistics info is provided. 
+   * more compact and verbose message for logging
+   * lots of replication code clean up for more reliable electing, a new option "-n" is added that allows user to customize the votes of electing.
+   * "memcache.py" is nearly patched for recent changes on private commands. The "mdbtop.py" tool is updated either.
+
 2008-09-04 Steve Chu <stvchu@gmail.com>
    * New option '-e' to set percent of the pages in the cache that should be clean, used for memp_trickle call(only available when '-T' is presented).
    
@@ -16,8 +22,8 @@
 
 2008-07-25 Steve Chu <stvchu@gmail.com>
    * Warning: 'pkget' and 'pvget' private command now has been discarded. 
-   Memcachedb will be a more memcache protocol compatible daemon(append and
-   preppend daemon will be implenmented later), and will not add relatinal 
+   MemcacheDB will be a more memcache protocol compatible daemon(append and
+   prepend command will be implemented later), and will not add relational 
    data model any more, the structural data storage will be issued by another
    project (now internal only).
 

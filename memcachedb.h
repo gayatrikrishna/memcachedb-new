@@ -39,10 +39,7 @@
 
 #define MAX_REP_PRIORITY 1000000
 #define MAX_REP_ACK_POLICY 6
-#define MAX_REP_ACK_TIMEOUT 3600000000ul
-#define MAX_REP_BULK 1
-#define MAX_REP_REQUEST_MAX 3600000000ul
-#define MAX_REP_REQUEST_MIN 10000ul
+#define MAX_REP_NSITES 1000
 
 /* Default path for a database, and its env home */
 #define DBFILE "data.db"
@@ -104,6 +101,8 @@ struct bdb_version {
     int patch;
 };
 
+enum mdb_rep_role { MDB_MASTER, MDB_CLIENT, MDB_UNKNOWN };
+
 struct bdb_settings {
     char *db_file;    /* db filename, where dbfile located. */
     char *env_home;    /* db env home dir path */
@@ -126,7 +125,7 @@ struct bdb_settings {
     char *rep_remotehost; /* remote host in replication */
     int rep_remoteport;  /* remote port in replication */
 
-    int rep_is_master; /* 1 on YES, 0 on NO, -1 on UNKNOWN, for two sites replication */
+    int rep_whoami;  /* replication role, MDB_MASTER/MDB_CLIENT/MDB_UNKNOWN */
     int rep_master_eid; /* replication master's eid */
 
     u_int32_t rep_start_policy;
@@ -276,7 +275,7 @@ void bdb_db_close(void);
 void bdb_env_close(void);
 void bdb_chkpoint(void);
 
-/* ibuffer management */
+/* item management */
 void item_init(void);
 item *do_item_from_freelist(void);
 int do_item_add_to_freelist(item *it);
@@ -287,6 +286,13 @@ item *item_get(char *key, size_t nkey);
 int item_put(char *key, size_t nkey, item *it);
 int item_delete(char *key, size_t nkey);
 int item_exists(char *key, size_t nkey);
+
+/* bdb related stats */
+void stats_bdb(char *temp);
+void stats_rep(char *temp);
+void stats_repmgr(char *temp);
+void stats_repcfg(char *temp);
+void stats_repms(char *temp);
 
 /* conn management */
 conn *do_conn_from_freelist();

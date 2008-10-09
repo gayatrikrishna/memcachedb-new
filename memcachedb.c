@@ -724,7 +724,7 @@ int do_store_item(item *it, int comm) {
     
     if (old_it != NULL)
         item_free(old_it);
-    if (old_it != NULL)
+    if (new_it != NULL)
         item_free(new_it);
 
     if (ret  == 0) {
@@ -873,182 +873,40 @@ static void process_stat(conn *c, token_t *tokens, const size_t ntokens) {
         return;
     }
 
+    /* for bdb stats */
     if (strcmp(subcommand, "bdb") == 0) {
         char temp[512];
-        char *pos = temp;
-        int ret;
-        pos += sprintf(pos, "STAT db_ver %d.%d.%d\r\n", bdb_version.majver, bdb_version.minver, bdb_version.patch);
-        pos += sprintf(pos, "STAT cache_size %u\r\n", bdb_settings.cache_size);
-        /* get page size */
-        if((ret = dbp->get_pagesize(dbp, &bdb_settings.page_size)) == 0){
-            pos += sprintf(pos, "STAT page_size %u\r\n", bdb_settings.page_size);
+        stats_bdb(temp);
+        out_string(c, temp);
+        return;
+    }
+    
+    /* for replication stats */
+    if (bdb_settings.is_replicated){
+        if (strcmp(subcommand, "rep") == 0) {
+            char temp[2048];
+            stats_rep(temp);
+            out_string(c, temp);
+            return;
         }
-        /* get database type */
-        if((ret = dbp->get_type(dbp, &bdb_settings.db_type)) == 0){
-            if (bdb_settings.db_type == DB_BTREE){
-                pos += sprintf(pos, "STAT db_type btree\r\n");
-            }else if (bdb_settings.db_type == DB_HASH){
-                pos += sprintf(pos, "STAT db_type hash\r\n");
-            }
+        if (strcmp(subcommand, "repmgr") == 0) {
+            char temp[256];
+            stats_repmgr(temp);
+            out_string(c, temp);
+            return;
         }
-        pos += sprintf(pos, "STAT txn_lg_bsize %u\r\n", bdb_settings.txn_lg_bsize);
-        pos += sprintf(pos, "STAT txn_nosync %d\r\n", bdb_settings.txn_nosync);
-        pos += sprintf(pos, "STAT dldetect_val %d\r\n", bdb_settings.dldetect_val);
-        pos += sprintf(pos, "STAT chkpoint_val %d\r\n", bdb_settings.chkpoint_val);
-        pos += sprintf(pos, "STAT memp_trickle_val %d\r\n", bdb_settings.memp_trickle_val);
-        pos += sprintf(pos, "STAT memp_trickle_percent %d\r\n", bdb_settings.memp_trickle_percent);
-        pos += sprintf(pos, "END");
-        out_string(c, temp);
-        return;
-    }
-
-    if (strcmp(subcommand, "repcfg") == 0) {
-        char temp[512];
-        char *pos = temp;
-        int ret;
-        if (bdb_settings.is_replicated == 1){
-            if (env->rep_get_priority(env, &bdb_settings.rep_priority) == 0){
-                pos += sprintf(pos, "STAT rep_priority %d\r\n", bdb_settings.rep_priority);
-            }
-            if (env->repmgr_get_ack_policy(env, &bdb_settings.rep_ack_policy) == 0){
-                pos += sprintf(pos, "STAT rep_ack_policy %d\r\n", bdb_settings.rep_ack_policy);
-            }
-
-            if (env->rep_get_timeout(env, DB_REP_ACK_TIMEOUT, &bdb_settings.rep_ack_timeout) == 0){
-                pos += sprintf(pos, "STAT rep_ack_timeout %u\r\n", bdb_settings.rep_ack_timeout);
-            }
-            if (env->rep_get_timeout(env, DB_REP_CHECKPOINT_DELAY, &bdb_settings.rep_chkpoint_delay) == 0){
-                pos += sprintf(pos, "STAT rep_chkpoint_delay %u\r\n", bdb_settings.rep_chkpoint_delay);
-            }
-            if (env->rep_get_timeout(env, DB_REP_CONNECTION_RETRY, &bdb_settings.rep_conn_retry) == 0){
-                pos += sprintf(pos, "STAT rep_conn_retry %u\r\n", bdb_settings.rep_conn_retry);
-            }
-            if (env->rep_get_timeout(env, DB_REP_ELECTION_TIMEOUT, &bdb_settings.rep_elect_timeout) == 0){
-                pos += sprintf(pos, "STAT rep_elect_timeout %u\r\n", bdb_settings.rep_elect_timeout);
-            }
-            if (env->rep_get_timeout(env, DB_REP_ELECTION_RETRY, &bdb_settings.rep_elect_retry) == 0){
-                pos += sprintf(pos, "STAT rep_elect_retry %u\r\n", bdb_settings.rep_elect_retry);
-            }
-            if (env->rep_get_timeout(env, DB_REP_HEARTBEAT_MONITOR, &bdb_settings.rep_heartbeat_monitor) == 0){
-                pos += sprintf(pos, "STAT rep_heartbeat_monitor %u\r\n", bdb_settings.rep_heartbeat_monitor);
-            }
-            if (env->rep_get_timeout(env, DB_REP_HEARTBEAT_SEND, &bdb_settings.rep_heartbeat_send) == 0){
-                pos += sprintf(pos, "STAT rep_heartbeat_send %u\r\n", bdb_settings.rep_heartbeat_send);
-            }
-            if (env->rep_get_timeout(env, DB_REP_LEASE_TIMEOUT, &bdb_settings.rep_lease_timeout) == 0){
-                pos += sprintf(pos, "STAT rep_lease_timeout %u\r\n", bdb_settings.rep_lease_timeout);
-            }
-
-            if (env->rep_get_config(env, DB_REP_CONF_BULK, &bdb_settings.rep_bulk) == 0){
-                pos += sprintf(pos, "STAT rep_bulk %d\r\n", bdb_settings.rep_bulk);
-            }
-            if (env->rep_get_config(env, DB_REP_CONF_LEASE, &bdb_settings.rep_lease) == 0){
-                pos += sprintf(pos, "STAT rep_lease %d\r\n", bdb_settings.rep_lease);
-            }
-
-            if (env->rep_get_request(env, &bdb_settings.rep_req_min, &bdb_settings.rep_req_max) == 0){ 
-                pos += sprintf(pos, "STAT rep_request %u/%u\r\n", bdb_settings.rep_req_min, bdb_settings.rep_req_max);
-            } 
-
-            if (env->rep_get_clockskew(env, &bdb_settings.rep_fast_clock, &bdb_settings.rep_slow_clock) == 0){ 
-                pos += sprintf(pos, "STAT rep_clock %u/%u\r\n", bdb_settings.rep_fast_clock, bdb_settings.rep_slow_clock);
-            } 
-
-            if (env->rep_get_limit(env, &bdb_settings.rep_limit_gbytes, &bdb_settings.rep_limit_bytes) == 0){ 
-                pos += sprintf(pos, "STAT rep_limit %u/%u\r\n", bdb_settings.rep_limit_gbytes, bdb_settings.rep_limit_bytes);
-            } 
-
-            if (env->rep_get_nsites(env, &bdb_settings.rep_nsites) == 0){ 
-                pos += sprintf(pos, "STAT rep_nsites %u\r\n", bdb_settings.rep_nsites);
-            } 
+        if (strcmp(subcommand, "repcfg") == 0) {
+            char temp[512];
+            stats_repcfg(temp);
+            out_string(c, temp);
+            return;
         }
-        pos += sprintf(pos, "END");
-        out_string(c, temp);
-        return;
-    }
-
-    if (strcmp(subcommand, "repgrp") == 0) {
-        char temp[1024];
-        char *pos = temp;
-        int ret;
-        if (bdb_settings.is_replicated == 1){
-            DB_REPMGR_SITE *list = NULL;
-            u_int count, i;
-            if ((0 == env->repmgr_site_list(env, &count, &list))) { 
-                for (i = 0; i < count; ++i) {
-                        pos += sprintf(pos, "STAT %d/%s:%d/%d\r\n", list[i].eid, list[i].host, list[i].port, list[i].status);
-                }
-            }
-            if (list != NULL)
-                free(list);
-    	}
-        pos += sprintf(pos, "END");
-        out_string(c, temp);
-        return;
-    }
-
-    if (strcmp(subcommand, "repms") == 0) {
-        char temp[1024];
-        char *pos = temp;
-        int ret;
-        if (bdb_settings.is_replicated == 1){
-            DB_REPMGR_SITE *list = NULL;
-            u_int count, i;
- 
-            if (DB_EID_INVALID == bdb_settings.rep_master_eid) {
-                pos += sprintf(pos, "STAT rep_whoismaster REP_UNKNOWN\r\n");
-            }
- 
-            if (BDB_EID_SELF == bdb_settings.rep_master_eid) {
-                pos += sprintf(pos, "STAT rep_whoismaster %s:%d\r\n",bdb_settings.rep_localhost, bdb_settings.rep_localport);
-            }else {
-                if ((0 == env->repmgr_site_list(env, &count, &list))) { 
-                    for (i = 0; i < count; ++i) {
-                        if(bdb_settings.rep_master_eid == list[i].eid) {
-                            pos += sprintf(pos, "STAT rep_whoismaster %s:%d\r\n", list[i].host, list[i].port);
-                            break;
-                        }
-                    }
-                }
-            }
-            if (list != NULL)
-                free(list);
- 
-            pos += sprintf(pos, "STAT rep_localhp %s:%d\r\n", bdb_settings.rep_localhost, bdb_settings.rep_localport);
-
-            /* if it is master */
-            switch (bdb_settings.rep_is_master) {
-                case 1:
-                    pos += sprintf(pos, "STAT rep_ismaster REP_TRUE\r\n");
-                    break;
-                case 0:
-                    pos += sprintf(pos, "STAT rep_ismaster REP_FALSE\r\n");
-                    break;
-                default:
-                    pos += sprintf(pos, "STAT rep_ismaster REP_UNKNOWN\r\n");
-            }
-    	}
-        pos += sprintf(pos, "END");
-        out_string(c, temp);
-        return;
-    }
-
-    if (strcmp(subcommand, "replsn") == 0) {
-        char temp[128];
-        char *pos = temp;
-        int ret;
-        DB_REP_STAT *statp;
-        if (bdb_settings.is_replicated == 1){
-            if (env->rep_stat(env, &statp, 0) == 0){
-                pos += sprintf(pos, "STAT rep_next_lsn %lu/%lu\r\n", (u_long)statp->st_next_lsn.file, (u_long)statp->st_next_lsn.offset);
-            }
-            if (statp != NULL)
-                free(statp);
-    	}
-
-        pos += sprintf(pos, "END");
-        out_string(c, temp);
-        return;
+        if (strcmp(subcommand, "repms") == 0) {
+            char temp[256];
+            stats_repms(temp);
+            out_string(c, temp);
+            return;
+        }
     }
 
 #ifdef HAVE_MALLOC_H
@@ -1416,142 +1274,41 @@ static void process_rep_command(conn *c, token_t *tokens, const size_t ntokens) 
 
     assert(c != NULL);
 
-    if (0 == bdb_settings.is_replicated){
-        out_string(c, "REP_DISABLE");
-        return;
-    }
-
-    if (ntokens == 2 && strcmp(tokens[COMMAND_TOKEN].value, "rep_ismaster") == 0){
-        switch (bdb_settings.rep_is_master) {
-            case 1:
-                out_string(c, "REP_TRUE");
-                break;
-            case 0:
-                out_string(c, "REP_FALSE");
-                break;
-            default:
-                out_string(c, "REP_UNKNOWN");
-        }
-        return;
-    
-    }else if (ntokens == 2 && strcmp(tokens[COMMAND_TOKEN].value, "rep_whoismaster") == 0){
-        DB_REPMGR_SITE *list = NULL;
-        u_int count, i;
-        char temp[256];
-
-        if (0 == bdb_settings.is_replicated){
-            out_string(c, "REP_DISABLE");
-            return;
-        }
-
-        if (DB_EID_INVALID == bdb_settings.rep_master_eid) {
-            out_string(c, "REP_UNKNOWN");
-            return;
-        }
-
-        if (BDB_EID_SELF == bdb_settings.rep_master_eid) {
-            snprintf(temp, 255, "%s:%d",bdb_settings.rep_localhost, bdb_settings.rep_localport);
-        }else {
-            if ((0 == env->repmgr_site_list(env, &count, &list))) { 
-                for (i = 0; i < count; ++i) {
-                    if(bdb_settings.rep_master_eid == list[i].eid) {
-                        snprintf(temp, 255, "%s:%d",list[i].host,list[i].port);
-                        break;
-                    }
-                }
+    if (bdb_settings.is_replicated){
+        if (ntokens == 3 && strcmp(tokens[COMMAND_TOKEN].value, "rep_set_priority") == 0){
+            int priority;
+            priority = strtoul(tokens[1].value, NULL, 10);
+            if(errno == ERANGE || priority < 0) {
+                out_string(c, "CLIENT_ERROR bad command line format");
+                return;
             }
-        }
-        out_string(c, temp);
-        if (list != NULL)
-            free(list);
-        return;
-    
-    }else if (ntokens == 3 && strcmp(tokens[COMMAND_TOKEN].value, "rep_set_priority") == 0){
-        int priority;
-        char temp[32];
-        priority = strtoul(tokens[1].value, NULL, 10);
-        if(errno == ERANGE || priority < 0) {
-            out_string(c, "CLIENT_ERROR bad command line format");
+            bdb_settings.rep_priority = priority > MAX_REP_PRIORITY ? MAX_REP_PRIORITY : priority;
+            if (env->rep_set_priority(env, bdb_settings.rep_priority) != 0){
+                out_string(c, "SERVER_ERROR env->rep_set_priority");
+                return;
+            }
+            out_string(c, "OK");
             return;
-        }
-        bdb_settings.rep_priority = priority > MAX_REP_PRIORITY ? MAX_REP_PRIORITY : priority;
-        if (env->rep_set_priority(env, bdb_settings.rep_priority) != 0){
-            out_string(c, "SERVER_ERROR env->rep_set_priority");
-            return;
-        }
-        snprintf(temp, 31, "%d", bdb_settings.rep_priority);
-        out_string(c, temp);
 
-    }else if (ntokens == 3 && strcmp(tokens[COMMAND_TOKEN].value, "rep_set_ack_policy") == 0){
-        int ack_policy;
-        char temp[32];
-        ack_policy = strtoul(tokens[1].value, NULL, 10);
-        if(errno == ERANGE || ack_policy <= 0) {
-            out_string(c, "CLIENT_ERROR bad command line format");
+        } else if (ntokens == 3 && strcmp(tokens[COMMAND_TOKEN].value, "rep_set_ack_policy") == 0){
+            int ack_policy;
+            ack_policy = strtoul(tokens[1].value, NULL, 10);
+            if(errno == ERANGE || ack_policy <= 0) {
+                out_string(c, "CLIENT_ERROR bad command line format");
+                return;
+            }
+            bdb_settings.rep_ack_policy = ack_policy > MAX_REP_ACK_POLICY ? MAX_REP_ACK_POLICY : ack_policy;
+            if (env->repmgr_set_ack_policy(env, bdb_settings.rep_ack_policy) != 0){
+                out_string(c, "SERVER_ERROR env->repmgr_set_ack_policy");
+                return;
+            }
+            out_string(c, "OK");
             return;
-        }
-        bdb_settings.rep_ack_policy = ack_policy > MAX_REP_ACK_POLICY ? MAX_REP_ACK_POLICY : ack_policy;
-        if (env->repmgr_set_ack_policy(env, bdb_settings.rep_ack_policy) != 0){
-            out_string(c, "SERVER_ERROR env->repmgr_set_ack_policy");
-            return;
-        }
-        snprintf(temp, 31, "%d", bdb_settings.rep_ack_policy);
-        out_string(c, temp);
 
-     }else if (ntokens == 3 && strcmp(tokens[COMMAND_TOKEN].value, "rep_set_ack_timeout") == 0){
-        u_int32_t ack_timeout;
-        char temp[32];
-        ack_timeout = strtoul(tokens[1].value, NULL, 10);
-        if(errno == ERANGE) {
-            out_string(c, "CLIENT_ERROR bad command line format");
-            return;
+        }else {
+            out_string(c, "ERROR");
         }
-        bdb_settings.rep_ack_timeout = ack_timeout > MAX_REP_ACK_TIMEOUT ? MAX_REP_ACK_TIMEOUT : ack_timeout;
-        if (env->rep_set_timeout(env, DB_REP_ACK_TIMEOUT, bdb_settings.rep_ack_timeout) != 0){
-            out_string(c, "SERVER_ERROR env->repmgr_set_ack_timeout");
-            return;
-        }
-        snprintf(temp, 31, "%d", bdb_settings.rep_ack_timeout);
-        out_string(c, temp);
-    }else if (ntokens == 3 && strcmp(tokens[COMMAND_TOKEN].value, "rep_set_bulk") == 0){
-        int bulk;
-        char temp[32];
-        bulk = strtoul(tokens[1].value, NULL, 10);
-        if(errno == ERANGE || bulk < 0) {
-            out_string(c, "CLIENT_ERROR bad command line format");
-            return;
-        }
-        bdb_settings.rep_bulk = bulk > MAX_REP_BULK ? MAX_REP_BULK : bulk;
-        if (env->rep_set_config(env, DB_REP_CONF_BULK, bdb_settings.rep_bulk) != 0){
-            out_string(c, "SERVER_ERROR env->rep_set_config");
-            return;
-        }
-        snprintf(temp, 31, "%d", bdb_settings.rep_bulk);
-        out_string(c, temp);
-     }else if (ntokens == 4 && strcmp(tokens[COMMAND_TOKEN].value, "rep_set_request") == 0){
-        u_int32_t req_min, req_max;
-        char temp[32];
-        req_min = strtoul(tokens[1].value, NULL, 10);
-        if(errno == ERANGE) {
-            out_string(c, "CLIENT_ERROR bad command line format");
-            return;
-        }
-        req_max = strtoul(tokens[2].value, NULL, 10);
-        if(errno == ERANGE) {
-            out_string(c, "CLIENT_ERROR bad command line format");
-            return;
-        }
- 
-        bdb_settings.rep_req_min = req_min < MAX_REP_REQUEST_MIN ? MAX_REP_REQUEST_MIN : req_min;
-        bdb_settings.rep_req_max = req_max > MAX_REP_REQUEST_MAX ? MAX_REP_REQUEST_MAX : req_max;
-        if (env->rep_set_request(env, bdb_settings.rep_req_min, bdb_settings.rep_req_max) != 0){
-            out_string(c, "SERVER_ERROR env->set_rep_request");
-            return;
-        }
-        snprintf(temp, 31, "%u/%u", bdb_settings.rep_req_min, bdb_settings.rep_req_max);
-        out_string(c, temp);
-
-    }else {
+    } else {
         out_string(c, "ERROR");
     }
     return;
@@ -1672,14 +1429,8 @@ static void process_command(conn *c, char *command) {
 
         process_verbosity_command(c, tokens, ntokens);
 
-    } else if (ntokens >= 2 && ntokens <= 4 &&
-               ((strcmp(tokens[COMMAND_TOKEN].value, "rep_ismaster") == 0 ) ||
-                (strcmp(tokens[COMMAND_TOKEN].value, "rep_whoismaster") == 0 ) ||
-                (strcmp(tokens[COMMAND_TOKEN].value, "rep_set_ack_policy") == 0 ) ||
-                (strcmp(tokens[COMMAND_TOKEN].value, "rep_set_ack_timeout") == 0 ) ||
-                (strcmp(tokens[COMMAND_TOKEN].value, "rep_set_bulk") == 0 ) ||
-                (strcmp(tokens[COMMAND_TOKEN].value, "rep_set_request") == 0 ) ||
-                (strcmp(tokens[COMMAND_TOKEN].value, "rep_set_priority") == 0 ))) {
+    } else if (ntokens == 3 && ((strcmp(tokens[COMMAND_TOKEN].value, "rep_set_ack_policy") == 0) ||
+                                (strcmp(tokens[COMMAND_TOKEN].value, "rep_set_priority") == 0) )) {
 
         process_rep_command(c, tokens, ntokens);
 
@@ -2448,6 +2199,7 @@ static void usage(void) {
     printf("-R            identifies the host and port used by this site (required).\n");
     printf("-O            identifies another site participating in this replication group\n");
     printf("-M/-S         start as a master or slave\n");
+    printf("-n            number of sites that participat in replication, default is 2\n");
     printf("-----------------------------------------------------------------------\n");
 
     return;
@@ -2649,7 +2401,7 @@ int main (int argc, char **argv) {
     setbuf(stderr, NULL);
 
     /* process arguments */
-    while ((c = getopt(argc, argv, "a:U:p:s:c:hikvl:dru:P:t:b:f:H:B:m:A:L:C:T:e:D:NEMSR:O:")) != -1) {
+    while ((c = getopt(argc, argv, "a:U:p:s:c:hivl:dru:P:t:b:f:H:B:m:A:L:C:T:e:D:NMSR:O:n:")) != -1) {
         switch (c) {
         case 'a':
             /* access for unix domain socket, as octal mask (like chmod)*/
@@ -2789,6 +2541,9 @@ int main (int argc, char **argv) {
             }
             bdb_settings.rep_remoteport = (unsigned short)atoi(portstr);
             break;
+        case 'n':
+            bdb_settings.rep_nsites = atoi(optarg);
+            break;
 
         default:
             fprintf(stderr, "Illegal argument \"%c\"\n", c);
@@ -2895,30 +2650,6 @@ int main (int argc, char **argv) {
     if (daemonize)
         save_pid(getpid(), pid_file);
 
-    /* put all bdb init staff here to make sure all worker thread has beed initlized*/
-    /* here we init bdb env and open db */
-    bdb_env_init();
-    bdb_db_open();
-
-    /* start checkpoint and deadlock detect thread */
-    start_chkpoint_thread();
-    start_memp_trickle_thread();
-    start_dl_detect_thread();
-    
-    /* register atexit callback function */
-    if (0 != atexit(bdb_env_close)) {
-        fprintf(stderr, "can not register close_env"); 
-        exit(EXIT_FAILURE);
-    }
-    if (0 != atexit(bdb_db_close)) {
-        fprintf(stderr, "can not register close_db"); 
-        exit(EXIT_FAILURE);
-    }
-    if (0 != atexit(bdb_chkpoint)) {
-        fprintf(stderr, "can not register db_checkpoint"); 
-        exit(EXIT_FAILURE);
-    }
-
     /* create unix mode sockets after dropping privileges */
     if (settings.socketpath != NULL) {
         if (server_socket_unix(settings.socketpath,settings.access)) {
@@ -2949,6 +2680,29 @@ int main (int argc, char **argv) {
             exit(EXIT_FAILURE);
         }
     }
+    
+    /* register atexit callback function */
+    if (0 != atexit(bdb_env_close)) {
+        fprintf(stderr, "can not register close_env"); 
+        exit(EXIT_FAILURE);
+    }
+    if (0 != atexit(bdb_db_close)) {
+        fprintf(stderr, "can not register close_db"); 
+        exit(EXIT_FAILURE);
+    }
+    if (0 != atexit(bdb_chkpoint)) {
+        fprintf(stderr, "can not register db_checkpoint"); 
+        exit(EXIT_FAILURE);
+    }
+    
+    /* here we init bdb env and open db */
+    bdb_env_init();
+    bdb_db_open();
+
+    /* start checkpoint and deadlock detect thread */
+    start_chkpoint_thread();
+    start_memp_trickle_thread();
+    start_dl_detect_thread();
 
     /* enter the event loop */
     event_base_loop(main_base, 0);
