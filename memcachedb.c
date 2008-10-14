@@ -1,4 +1,3 @@
-/* -*- Mode: C; tab-width: 4; c-basic-offset: 4; indent-tabs-mode: nil -*- */
 /*
  *  MemcacheDB - A distributed key-value storage system designed for persistent:
  *
@@ -16,7 +15,6 @@
  *  Authors:
  *      Steve Chu <stvchu@gmail.com>
  *
- *  $Id: memcachedb.c 2008-01-28 17:27:13Z steve $
  */
 
 #include "memcachedb.h"

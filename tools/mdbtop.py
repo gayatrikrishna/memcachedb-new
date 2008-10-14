@@ -1,8 +1,15 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
+#
+# Copyright 2008 Steve Chu.  All rights reserved.
+# 
+# Use and distribution licensed under the BSD license.  See
+# the LICENSE file for full text.
+# 
+# Authors:
+#     Steve Chu <stvchu@gmail.com>
 
-"""
-a Monitor for Memcachedb
+"""a Monitor for Memcachedb
 
 Overview
 ========

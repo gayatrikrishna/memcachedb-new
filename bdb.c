@@ -23,6 +23,14 @@
 #include <signal.h>
 #include <db.h>
 
+static void *bdb_chkpoint_thread __P((void *));
+static void *bdb_memp_trickle_thread __P((void *));
+static void *bdb_dl_detect_thread __P((void *));
+static void bdb_event_callback __P((DB_ENV *, u_int32_t, void *));
+static void bdb_err_callback(const DB_ENV *dbenv, const char *errpfx, const char *msg);
+static void bdb_msg_callback(const DB_ENV *dbenv, const char *msg);
+
+
 static pthread_t chk_ptid;
 static pthread_t mtri_ptid;
 static pthread_t dld_ptid;
@@ -65,7 +73,7 @@ void bdb_settings_init(void)
     bdb_settings.rep_conn_retry = 30 * 1000 * 1000; /* 3 seconds*/
     bdb_settings.rep_elect_timeout = 5 * 1000 * 1000; /* 5 seconds */
     bdb_settings.rep_elect_retry = 10 * 1000 * 1000; /* 10 seconds */
-    bdb_settings.rep_heartbeat_monitor = 60 * 1000 * 1000; /* 60 seconds */
+    bdb_settings.rep_heartbeat_monitor = 80 * 1000 * 1000; /* 60 seconds */
     bdb_settings.rep_heartbeat_send = 60 * 1000 * 1000; /* 60 seconds */
     bdb_settings.rep_lease_timeout = 0; /* now never used */
 
@@ -93,9 +101,11 @@ void bdb_env_init(void){
     }
 
     /* set err&msg display */
-    env->set_errfile(env, stderr);
     env->set_errpfx(env, PACKAGE);
-    env->set_msgfile(env, stderr);
+    /* env->set_errfile(env, stderr); */
+    /* env->set_msgfile(env, stderr); */
+	env->set_errcall(env, bdb_err_callback);
+  	env->set_msgcall(env, bdb_msg_callback);
 
     /* set BerkeleyDB verbose*/
     if (settings.verbose > 1) {
@@ -129,6 +139,9 @@ void bdb_env_init(void){
     env->set_lk_max_locks(env, 20000);
     env->set_lk_max_objects(env, 20000);
 
+    /* at least max active transactions */
+  	env->set_tx_max(env, 10000);
+
     /* set transaction log buffer */
     env->set_lg_bsize(env, bdb_settings.txn_lg_bsize);
     
@@ -142,6 +155,8 @@ void bdb_env_init(void){
     
     if(bdb_settings.is_replicated) {
         bdb_settings.env_flags |= DB_INIT_REP;
+
+        /* verbose messages that help us to debug */
         if (settings.verbose > 1) {
             if ((ret = env->set_verbose(env, DB_VERB_REPLICATION, 1)) != 0) {
                 fprintf(stderr, "env->set_verbose[DB_VERB_REPLICATION]: %s\n",
@@ -149,35 +164,53 @@ void bdb_env_init(void){
                 exit(EXIT_FAILURE);
             }
         }
+
+        /* set up the event hook, so we can do logging when something happens */
         env->set_event_notify(env, bdb_event_callback);
+
+        /* ack policy can have a great impact in performance, lantency and consistency */
         env->repmgr_set_ack_policy(env, bdb_settings.rep_ack_policy);
 
-		/* set replication timeout */
+        /* timeout configs */
         env->rep_set_timeout(env, DB_REP_ACK_TIMEOUT, bdb_settings.rep_ack_timeout);
         env->rep_set_timeout(env, DB_REP_CHECKPOINT_DELAY, bdb_settings.rep_chkpoint_delay);
         env->rep_set_timeout(env, DB_REP_CONNECTION_RETRY, bdb_settings.rep_conn_retry);
         env->rep_set_timeout(env, DB_REP_ELECTION_TIMEOUT, bdb_settings.rep_elect_timeout);
         env->rep_set_timeout(env, DB_REP_ELECTION_RETRY, bdb_settings.rep_elect_retry);
-        // env->rep_set_timeout(env, DB_REP_HEARTBEAT_MONITOR, bdb_settings.rep_heartbeat_monitor);
-        // env->rep_set_timeout(env, DB_REP_HEARTBEAT_SEND, bdb_settings.rep_heartbeat_send);
-        /*env->rep_set_timeout(env, DB_REP_LEASE_TIMEOUT, bdb_settings.rep_lease_timeout);*/
 
-		/* set replication configure */
+        /* notice:
+           The "monitor" time should always be at least a little bit longer than the "send" time */
+        env->rep_set_timeout(env, DB_REP_HEARTBEAT_MONITOR, bdb_settings.rep_heartbeat_monitor);
+        env->rep_set_timeout(env, DB_REP_HEARTBEAT_SEND, bdb_settings.rep_heartbeat_send);
+
+        /* Bulk transfers simply cause replication messages to accumulate
+           in a buffer until a triggering event occurs.  
+	    	   Bulk transfer occurs when:
+           1. Bulk transfers are configured for the master environment, and
+           2. the message buffer is full or
+           3. a permanent record (for example, a transaction commit or a checkpoint record)
+		   is placed in the buffer for the replica.
+        */
         env->rep_set_config(env, DB_REP_CONF_BULK, bdb_settings.rep_bulk);
-        /*env->rep_set_config(env, DB_REP_CONF_LEASE, bdb_settings.rep_lease);*/
+
+        /* we now never use master lease */
+        /*
+        env->rep_set_timeout(env, DB_REP_LEASE_TIMEOUT, bdb_settings.rep_lease_timeout);
+        env->rep_set_config(env, DB_REP_CONF_LEASE, bdb_settings.rep_lease);
+        env->rep_set_clockskew(env, bdb_settings.rep_fast_clock, bdb_settings.rep_slow_clock);
+        */
 
         env->rep_set_priority(env, bdb_settings.rep_priority);
         env->rep_set_request(env, bdb_settings.rep_req_min, bdb_settings.rep_req_max);
-        /* env->rep_set_clockskew(env, bdb_settings.rep_fast_clock, bdb_settings.rep_slow_clock);*/
 		env->rep_set_limit(env, bdb_settings.rep_limit_gbytes, bdb_settings.rep_limit_bytes);
 
-        /* publish the local site */
+        /* publish the local site communication channel */
         if ((ret = env->repmgr_set_local_site(env, bdb_settings.rep_localhost, bdb_settings.rep_localport, 0)) != 0) {
             fprintf(stderr, "repmgr_set_local_site[%s:%d]: %s\n", 
                     bdb_settings.rep_localhost, bdb_settings.rep_localport, db_strerror(ret));
             exit(EXIT_FAILURE);
         }
-        /* add a remote site, mostly this a master */
+        /* add a remote site, mostly this is a master */
         if(NULL != bdb_settings.rep_remotehost) {
             if ((ret = env->repmgr_add_remote_site(env, bdb_settings.rep_remotehost, bdb_settings.rep_remoteport, NULL, 0)) != 0) {
                 fprintf(stderr, "repmgr_add_remote_site[%s:%d]: %s\n", 
@@ -185,7 +218,8 @@ void bdb_env_init(void){
                 exit(EXIT_FAILURE);
             }
         }
-        /* nsite is important for electing */
+        /* nsite is important for electing, default nvotes is (nsite/2 + 1)
+           if nsite is equel to 2, then nvotes is 1 */
         if ((ret = env->rep_set_nsites(env, bdb_settings.rep_nsites)) != 0) {
             fprintf(stderr, "rep_set_nsites: %s\n", db_strerror(ret));
             exit(EXIT_FAILURE);
@@ -203,7 +237,7 @@ void bdb_env_init(void){
             fprintf(stderr, "env->repmgr_start: %s\n", db_strerror(ret));
             exit(EXIT_FAILURE);
         }
-        /* sleep 5 second for electing */
+        /* sleep 5 second for electing or client startup */
         if (bdb_settings.rep_start_policy == DB_REP_ELECTION ||
             bdb_settings.rep_start_policy == DB_REP_CLIENT) {
             sleep(5);
@@ -299,7 +333,7 @@ void start_dl_detect_thread(void){
     }
 }
 
-void *bdb_chkpoint_thread(void *arg)
+static void *bdb_chkpoint_thread(void *arg)
 {
     DB_ENV *dbenv;
     int ret;
@@ -317,7 +351,7 @@ void *bdb_chkpoint_thread(void *arg)
     return (NULL);
 }
 
-void *bdb_memp_trickle_thread(void *arg)
+static void *bdb_memp_trickle_thread(void *arg)
 {
     DB_ENV *dbenv;
     int ret, nwrotep;
@@ -336,7 +370,7 @@ void *bdb_memp_trickle_thread(void *arg)
     return (NULL);
 }
 
-void *bdb_dl_detect_thread(void *arg)
+static void *bdb_dl_detect_thread(void *arg)
 {
     DB_ENV *dbenv;
     struct timeval t;
@@ -355,31 +389,31 @@ void *bdb_dl_detect_thread(void *arg)
     return (NULL);
 }
 
-void bdb_event_callback(DB_ENV *env, u_int32_t which, void *info)
+static void bdb_event_callback(DB_ENV *env, u_int32_t which, void *info)
 {
     switch (which) {
     case DB_EVENT_PANIC:
         env->errx(env, "evnet: DB_EVENT_PANIC, we got panic, recovery should be run.");
         break;
     case DB_EVENT_REP_CLIENT:
-        env->errx(env, "event: DB_EVENT_REP_CLIENT, I[%s:%d] am now a replication client.", 
+        env->errx(env, "event: DB_EVENT_REP_CLIENT, I<%s:%d> am now a replication client.", 
                        bdb_settings.rep_localhost, bdb_settings.rep_localport);
         bdb_settings.rep_whoami = MDB_CLIENT;
         break;
     case DB_EVENT_REP_ELECTED:
-        env->errx(env, "event: DB_EVENT_REP_ELECTED, I[%s:%d] has just won an election.", 
+        env->errx(env, "event: DB_EVENT_REP_ELECTED, I<%s:%d> has just won an election.", 
                        bdb_settings.rep_localhost, bdb_settings.rep_localport);
         break;
     case DB_EVENT_REP_MASTER:
-        env->errx(env, "event: DB_EVENT_REP_MASTER, I[%s:%d] am now a replication master.", 
+        env->errx(env, "event: DB_EVENT_REP_MASTER, I<%s:%d> am now a replication master.", 
                        bdb_settings.rep_localhost, bdb_settings.rep_localport);
         bdb_settings.rep_whoami = MDB_MASTER;
         bdb_settings.rep_master_eid = BDB_EID_SELF;
         break;
     case DB_EVENT_REP_NEWMASTER:
         bdb_settings.rep_master_eid = *(int*)info;
-        env->errx(env, "event: DB_EVENT_REP_NEWMASTER, a new master[eid: %d] has been established, "
-                       "but not me[%s:%d]", bdb_settings.rep_master_eid,
+        env->errx(env, "event: DB_EVENT_REP_NEWMASTER, a new master<eid: %d> has been established, "
+                       "but not me<%s:%d>", bdb_settings.rep_master_eid,
                        bdb_settings.rep_localhost, bdb_settings.rep_localport);
         break;
     case DB_EVENT_REP_PERM_FAILED:
@@ -398,6 +432,20 @@ void bdb_event_callback(DB_ENV *env, u_int32_t which, void *info)
     default:
         env->errx(env, "ignoring event %d", which);
     }
+}
+
+static void bdb_err_callback(const DB_ENV *dbenv, const char *errpfx, const char *msg){
+	time_t curr_time = time(NULL);
+	char time_str[32];
+	strftime(time_str, 32, "%c", localtime(&curr_time));
+	fprintf(stderr, "[%s] [%s] \"%s\"\n", errpfx, time_str, msg);
+}
+
+static void bdb_msg_callback(const DB_ENV *dbenv, const char *msg){
+	time_t curr_time = time(NULL);
+	char time_str[32];
+	strftime(time_str, 32, "%c", localtime(&curr_time));
+	fprintf(stderr, "[%s] [%s] \"%s\"\n", PACKAGE, time_str, msg);
 }
 
 /* for atexit cleanup */

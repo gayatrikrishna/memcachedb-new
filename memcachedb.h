@@ -1,6 +1,22 @@
-/* -*- Mode: C; tab-width: 4; c-basic-offset: 4; indent-tabs-mode: nil -*- */
-/* $Id$ */
-
+/*
+ *  MemcacheDB - A distributed key-value storage system designed for persistent:
+ *
+ *      http://memcachedb.googlecode.com
+ *
+ *  The source code of Memcachedb is most based on Memcached:
+ *
+ *      http://danga.com/memcached/
+ *
+ *  Copyright 2008 Steve Chu.  All rights reserved.
+ *
+ *  Use and distribution licensed under the BSD license.  See
+ *  the LICENSE file for full text.
+ *
+ *  Authors:
+ *      Steve Chu <stvchu@gmail.com>
+ *
+ */
+ 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -267,10 +283,6 @@ void bdb_db_open(void);
 void start_chkpoint_thread(void);
 void start_memp_trickle_thread(void);
 void start_dl_detect_thread(void);
-void *bdb_chkpoint_thread __P((void *));
-void *bdb_memp_trickle_thread __P((void *));
-void *bdb_dl_detect_thread __P((void *));
-void bdb_event_callback __P((DB_ENV *, u_int32_t, void *));
 void bdb_db_close(void);
 void bdb_env_close(void);
 void bdb_chkpoint(void);
