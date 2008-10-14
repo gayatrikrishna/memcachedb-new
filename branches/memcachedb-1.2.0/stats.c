@@ -1,4 +1,12 @@
 /*
+ *  MemcacheDB - A distributed key-value storage system designed for persistent:
+ *
+ *      http://memcachedb.googlecode.com
+ *
+ *  The source code of Memcachedb is most based on Memcached:
+ *
+ *      http://danga.com/memcached/
+ *
  *  Copyright 2008 Steve Chu.  All rights reserved.
  *
  *  Use and distribution licensed under the BSD license.  See
@@ -7,9 +15,8 @@
  *  Authors:
  *      Steve Chu <stvchu@gmail.com>
  *
- *  $Id: stats.c 2008-10-08 23:08:15Z steve $
  */
- 
+  
 #include "memcachedb.h"
 #include <db.h>
 
